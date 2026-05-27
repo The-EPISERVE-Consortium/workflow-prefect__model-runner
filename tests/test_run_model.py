@@ -91,63 +91,66 @@ def test_stage_input_raises_when_file_missing():
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
-def test_stage_input_raises_when_data_upload_fails():
-    api_client, objects_api = _lakefs_mocks()
-    objects_api.upload_object.side_effect = Exception("permission denied")
-    with (
+def _stage_patches(api_client, objects_api, mock_post=None):
+    ok_response = MagicMock()
+    ok_response.raise_for_status = MagicMock()
+    if mock_post is None:
+        mock_post = MagicMock(return_value=ok_response)
+    return (
         patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-    ):
+        patch("flows.run_model.requests.post", mock_post),
+        patch.dict("os.environ", {"LAKEFS_ACCESS_KEY": "key", "LAKEFS_SECRET_KEY": "secret"}),
+    ), mock_post
+
+
+def test_stage_input_raises_when_data_upload_fails():
+    api_client, objects_api = _lakefs_mocks()
+    bad_post = MagicMock(side_effect=Exception("permission denied"))
+    patches, _ = _stage_patches(api_client, objects_api, bad_post)
+    with patches[0], patches[1], patches[2], patches[3]:
         with pytest.raises(RuntimeError, match="Failed to stage data.tsv"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
 def test_stage_input_raises_when_config_upload_fails():
     api_client, objects_api = _lakefs_mocks()
-    objects_api.upload_object.side_effect = [None, Exception("permission denied")]
-    with (
-        patch("flows.run_model.lakefs_client", return_value=api_client),
-        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-    ):
+    ok = MagicMock()
+    ok.raise_for_status = MagicMock()
+    bad_post = MagicMock(side_effect=[ok, Exception("permission denied")])
+    patches, _ = _stage_patches(api_client, objects_api, bad_post)
+    with patches[0], patches[1], patches[2], patches[3]:
         with pytest.raises(RuntimeError, match="Failed to stage config.json"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
 def test_stage_input_calls_get_and_upload():
     api_client, objects_api = _lakefs_mocks()
-    with (
-        patch("flows.run_model.lakefs_client", return_value=api_client),
-        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-    ):
+    patches, mock_post = _stage_patches(api_client, objects_api)
+    with patches[0], patches[1], patches[2], patches[3]:
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     objects_api.get_object.assert_called_once_with(
         "data-raw", "main", "grippeweb/grippeweb-2026-W20.tsv"
     )
-    assert objects_api.upload_object.call_count == 2
-    paths = [c.args[2] for c in objects_api.upload_object.call_args_list]
+    assert mock_post.call_count == 2
+    paths = [c.kwargs["params"]["path"] for c in mock_post.call_args_list]
     assert f"{RUN_ID}/input/data.tsv" in paths
     assert f"{RUN_ID}/input/config.json" in paths
 
 
 def test_stage_input_config_uploaded_verbatim():
     api_client, objects_api = _lakefs_mocks()
-    captured = {}
-
-    def capture_upload(repo, branch, path, content=None):
-        if path.endswith("config.json"):
-            with open(content, "rb") as f:
-                captured["bytes"] = f.read()
-
-    objects_api.upload_object.side_effect = capture_upload
-
-    with (
-        patch("flows.run_model.lakefs_client", return_value=api_client),
-        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-    ):
+    patches, mock_post = _stage_patches(api_client, objects_api)
+    with patches[0], patches[1], patches[2], patches[3]:
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
-    assert captured["bytes"] == MODEL_CONFIG_JSON.encode()
+    config_call = next(
+        c for c in mock_post.call_args_list
+        if c.kwargs["params"]["path"].endswith("config.json")
+    )
+    _, content_bytes, _ = config_call.kwargs["files"]["content"]
+    assert content_bytes == MODEL_CONFIG_JSON.encode()
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────
