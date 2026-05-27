@@ -138,8 +138,8 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs cp {lakefs_run_path}/input/data.tsv /work/input/data.tsv && "
-                                f"lakectl fs cp {lakefs_run_path}/input/config.json /work/input/config.json"
+                                f"lakectl fs download {lakefs_run_path}/input/data.tsv /work/input/data.tsv && "
+                                f"lakectl fs download {lakefs_run_path}/input/config.json /work/input/config.json"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
@@ -156,8 +156,10 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"lakectl fs cp -r "
-                                f"/work/output/ {lakefs_run_path}/output/"
+                                f"find /work/output -type f | while read f; do "
+                                f"rel=\"${{f#/work/output/}}\"; "
+                                f"lakectl fs upload \"$f\" {lakefs_run_path}/output/\"$rel\"; "
+                                f"done"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
