@@ -21,12 +21,12 @@ def lakefs_client() -> lakefs_sdk.ApiClient:
 
 
 @task
-def stage_input(input_path: str, model_config: str, run_id: str):
+def stage_input(input_path: str, config_json: str, run_id: str):
     """
     Copy the input file from data-raw and write config.json into the run path.
 
     input_path:   e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
-    model_config: JSON string written verbatim as config.json
+    config_json: JSON string written verbatim as config.json
     Writes to:
       lakefs://model-runs/main/<run-id>/input/data.tsv
       lakefs://model-runs/main/<run-id>/input/config.json
@@ -45,7 +45,7 @@ def stage_input(input_path: str, model_config: str, run_id: str):
         objects_api.upload_object(
             LAKEFS_RUN_REPO, LAKEFS_BRANCH,
             f"{run_id}/input/config.json",
-            content=model_config.encode(),
+            content=config_json.encode(),
         )
 
 
@@ -153,7 +153,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
 def model_pipeline(
     input_path: str,
     model_image: str,
-    model_config: str,
+    config_json: str,
     model_tag: str = "latest",
     namespace: str = "default",
 ):
@@ -166,14 +166,14 @@ def model_pipeline(
                       e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
         model_image:  GHCR image name,
                       e.g. ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel
-        model_config: JSON string written verbatim as config.json in the input directory,
+        config_json: JSON string written verbatim as config.json in the input directory,
                       e.g. {"horizon_weeks": 4, "n_reference_weeks": 4}
         model_tag:    Image tag
         namespace:    Kubernetes namespace
     """
     run_id = f"{model_image.split('/')[-1]}-{datetime.now():%Y%m%d-%H%M%S}"
 
-    stage_input(input_path=input_path, model_config=model_config, run_id=run_id)
+    stage_input(input_path=input_path, config_json=config_json, run_id=run_id)
     submit_and_wait(
         run_id=run_id,
         model_image=model_image,

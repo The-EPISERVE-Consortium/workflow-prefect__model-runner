@@ -52,7 +52,7 @@ def test_run_id_format():
         result = model_pipeline.fn(
             input_path=INPUT_PATH,
             model_image=MODEL_IMAGE,
-            model_config=MODEL_CONFIG_JSON,
+            config_json=MODEL_CONFIG_JSON,
         )
     # lakefs://model-runs/main/<run-id>/output/  →  index 4
     run_id = result.split("/")[4]
@@ -79,7 +79,7 @@ def test_stage_input_calls_get_and_upload():
         patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
-        stage_input.fn(input_path=INPUT_PATH, model_config=MODEL_CONFIG_JSON, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     objects_api.get_object.assert_called_once_with(
         LAKEFS_DATA_REPO, LAKEFS_BRANCH, "grippeweb/grippeweb-2026-W20.tsv"
@@ -96,7 +96,7 @@ def test_stage_input_config_uploaded_verbatim():
         patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
-        stage_input.fn(input_path=INPUT_PATH, model_config=MODEL_CONFIG_JSON, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     config_call = next(
         c for c in objects_api.upload_object.call_args_list
@@ -190,7 +190,7 @@ def test_pipeline_return_path():
         result = model_pipeline.fn(
             input_path=INPUT_PATH,
             model_image=MODEL_IMAGE,
-            model_config=MODEL_CONFIG_JSON,
+            config_json=MODEL_CONFIG_JSON,
         )
 
     assert result.startswith(f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/")
