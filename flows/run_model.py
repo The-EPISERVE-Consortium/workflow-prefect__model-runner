@@ -179,10 +179,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"find /work/output -type f | while read f; do "
-                                f"rel=\"${{f#/work/output/}}\"; "
-                                f"lakectl fs upload \"$f\" {lakefs_run_path}/output/\"$rel\"; "
-                                f"done"
+                                f"lakectl fs upload --source /work/output -r {lakefs_run_path}/output/"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
