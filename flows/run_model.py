@@ -5,8 +5,8 @@ from datetime import datetime
 from prefect import flow, task
 from prefect.logging import get_run_logger
 from kubernetes import client, config as k8s_config
-import lakefs_sdk
-import requests
+import lakefs
+from lakefs.client import Client
 
 
 LAKEFS_ENDPOINT  = "https://lake-episerve.zib.de/"
@@ -15,13 +15,12 @@ LAKEFS_RUN_REPO  = "model-runs"
 LAKEFS_BRANCH    = "main"
 
 
-def lakefs_client() -> lakefs_sdk.ApiClient:
-    cfg = lakefs_sdk.Configuration(
+def _lakefs_client() -> Client:
+    return Client(
         host=os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT),
         username=os.environ["LAKEFS_ACCESS_KEY"],
         password=os.environ["LAKEFS_SECRET_KEY"],
     )
-    return lakefs_sdk.ApiClient(cfg)
 
 
 @task
@@ -37,58 +36,48 @@ def stage_input(input_path: str, config_json: str, run_id: str):
     """
     logger = get_run_logger()
 
-    with lakefs_client() as api:
-        objects_api = lakefs_sdk.ObjectsApi(api)
+    src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
+    dst_prefix = f"{run_id}/input"
+    dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
+    dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
 
-        src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
-        dst_prefix = f"{run_id}/input"
-        dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
-        dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
+    lc = _lakefs_client()
 
-        logger.info(f"Downloading input: {input_path}")
-        try:
-            data = objects_api.get_object(src_repo, src_branch, path)
-            if not isinstance(data, bytes):
-                data = data.read()
-            logger.info(f"Downloaded {len(data)} bytes from {input_path}")
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to read input file from LakeFS: {input_path} — "
-                f"make sure the file exists and credentials are correct."
-            ) from e
-
-        lakefs_host = os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT).rstrip("/")
-        auth = (os.environ["LAKEFS_ACCESS_KEY"], os.environ["LAKEFS_SECRET_KEY"])
-        upload_url = (
-            f"{lakefs_host}/api/v1/repositories/{LAKEFS_RUN_REPO}"
-            f"/branches/{LAKEFS_BRANCH}/objects"
+    logger.info(f"Downloading input: {input_path}")
+    try:
+        data = (
+            lakefs.repository(src_repo, client=lc)
+            .branch(src_branch)
+            .object(path)
+            .get()
+            .read()
         )
+        logger.info(f"Downloaded {len(data)} bytes from {input_path}")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to read input file from LakeFS: {input_path} — "
+            f"make sure the file exists and credentials are correct."
+        ) from e
 
-        logger.info(f"Staging data.tsv -> {dst_data}")
-        try:
-            resp = requests.post(
-                upload_url,
-                params={"path": f"{dst_prefix}/data.tsv"},
-                files={"content": ("data.tsv", data, "application/octet-stream")},
-                auth=auth,
-            )
-            resp.raise_for_status()
-            logger.info("data.tsv staged successfully")
-        except Exception as e:
-            raise RuntimeError(f"Failed to stage data.tsv to {dst_data}") from e
+    dst_branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
 
-        logger.info(f"Staging config.json -> {dst_config}")
-        try:
-            resp = requests.post(
-                upload_url,
-                params={"path": f"{dst_prefix}/config.json"},
-                files={"content": ("config.json", config_json.encode(), "application/json")},
-                auth=auth,
-            )
-            resp.raise_for_status()
-            logger.info("config.json staged successfully")
-        except Exception as e:
-            raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
+    logger.info(f"Staging data.tsv -> {dst_data}")
+    try:
+        dst_branch_handle.object(f"{dst_prefix}/data.tsv").upload(
+            data=data, content_type="application/octet-stream"
+        )
+        logger.info("data.tsv staged successfully")
+    except Exception as e:
+        raise RuntimeError(f"Failed to stage data.tsv to {dst_data}") from e
+
+    logger.info(f"Staging config.json -> {dst_config}")
+    try:
+        dst_branch_handle.object(f"{dst_prefix}/config.json").upload(
+            data=config_json.encode(), content_type="application/json"
+        )
+        logger.info("config.json staged successfully")
+    except Exception as e:
+        raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
 
 
 def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> str:

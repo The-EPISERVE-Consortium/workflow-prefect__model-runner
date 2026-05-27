@@ -1,6 +1,5 @@
 prefect>=3.0
 kubernetes
-lakefs-sdk
-requests
+lakefs
 pandas
 pytest

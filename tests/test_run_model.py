@@ -1,4 +1,3 @@
-import json
 import re
 from unittest.mock import MagicMock, patch
 
@@ -28,13 +27,40 @@ def mock_logger():
         yield
 
 
-def _lakefs_mocks():
-    objects_api = MagicMock()
-    objects_api.get_object.return_value = FAKE_DATA
-    api_client = MagicMock()
-    api_client.__enter__ = MagicMock(return_value=api_client)
-    api_client.__exit__ = MagicMock(return_value=False)
-    return api_client, objects_api
+def _lakefs_mocks(*, src_get_error=None, dst_upload_errors=None):
+    src_obj = MagicMock()
+    if src_get_error:
+        src_obj.get.side_effect = src_get_error
+    else:
+        src_obj.get.return_value.read.return_value = FAKE_DATA
+
+    dst_obj = MagicMock()
+    if dst_upload_errors is not None:
+        dst_obj.upload.side_effect = dst_upload_errors
+
+    src_branch_mock = MagicMock()
+    src_branch_mock.object.return_value = src_obj
+
+    dst_branch_mock = MagicMock()
+    dst_branch_mock.object.return_value = dst_obj
+
+    src_repo_mock = MagicMock()
+    src_repo_mock.branch.return_value = src_branch_mock
+
+    dst_repo_mock = MagicMock()
+    dst_repo_mock.branch.return_value = dst_branch_mock
+
+    def repo_factory(name, client=None):
+        return src_repo_mock if name == LAKEFS_DATA_REPO else dst_repo_mock
+
+    return repo_factory, src_branch_mock, dst_branch_mock, dst_obj
+
+
+def _stage_patches(repo_factory):
+    return (
+        patch("flows.run_model._lakefs_client"),
+        patch("flows.run_model.lakefs.repository", side_effect=repo_factory),
+    )
 
 
 def _k8s_batch_mock(*, succeeded: bool):
@@ -81,76 +107,53 @@ def test_input_path_parsing():
 # ── stage_input ───────────────────────────────────────────────────────────────
 
 def test_stage_input_raises_when_file_missing():
-    api_client, objects_api = _lakefs_mocks()
-    objects_api.get_object.side_effect = Exception("404 Not Found")
-    with (
-        patch("flows.run_model.lakefs_client", return_value=api_client),
-        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-    ):
+    repo_factory, _, _, _ = _lakefs_mocks(src_get_error=Exception("404 Not Found"))
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to read input file from LakeFS"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
-def _stage_patches(api_client, objects_api, mock_post=None):
-    ok_response = MagicMock()
-    ok_response.raise_for_status = MagicMock()
-    if mock_post is None:
-        mock_post = MagicMock(return_value=ok_response)
-    return (
-        patch("flows.run_model.lakefs_client", return_value=api_client),
-        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
-        patch("flows.run_model.requests.post", mock_post),
-        patch.dict("os.environ", {"LAKEFS_ACCESS_KEY": "key", "LAKEFS_SECRET_KEY": "secret"}),
-    ), mock_post
-
-
 def test_stage_input_raises_when_data_upload_fails():
-    api_client, objects_api = _lakefs_mocks()
-    bad_post = MagicMock(side_effect=Exception("permission denied"))
-    patches, _ = _stage_patches(api_client, objects_api, bad_post)
-    with patches[0], patches[1], patches[2], patches[3]:
+    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=Exception("permission denied"))
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage data.tsv"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
 def test_stage_input_raises_when_config_upload_fails():
-    api_client, objects_api = _lakefs_mocks()
-    ok = MagicMock()
-    ok.raise_for_status = MagicMock()
-    bad_post = MagicMock(side_effect=[ok, Exception("permission denied")])
-    patches, _ = _stage_patches(api_client, objects_api, bad_post)
-    with patches[0], patches[1], patches[2], patches[3]:
+    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, Exception("permission denied")])
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage config.json"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
 def test_stage_input_calls_get_and_upload():
-    api_client, objects_api = _lakefs_mocks()
-    patches, mock_post = _stage_patches(api_client, objects_api)
-    with patches[0], patches[1], patches[2], patches[3]:
+    repo_factory, src_branch_mock, dst_branch_mock, dst_obj = _lakefs_mocks()
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
-    objects_api.get_object.assert_called_once_with(
-        "data-raw", "main", "grippeweb/grippeweb-2026-W20.tsv"
-    )
-    assert mock_post.call_count == 2
-    paths = [c.kwargs["params"]["path"] for c in mock_post.call_args_list]
+    src_branch_mock.object.assert_called_once_with("grippeweb/grippeweb-2026-W20.tsv")
+    assert dst_obj.upload.call_count == 2
+    paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
     assert f"{RUN_ID}/input/data.tsv" in paths
     assert f"{RUN_ID}/input/config.json" in paths
 
 
 def test_stage_input_config_uploaded_verbatim():
-    api_client, objects_api = _lakefs_mocks()
-    patches, mock_post = _stage_patches(api_client, objects_api)
-    with patches[0], patches[1], patches[2], patches[3]:
+    repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
-    config_call = next(
-        c for c in mock_post.call_args_list
-        if c.kwargs["params"]["path"].endswith("config.json")
+    config_idx = next(
+        i for i, c in enumerate(dst_branch_mock.object.call_args_list)
+        if "config.json" in c.args[0]
     )
-    _, content_bytes, _ = config_call.kwargs["files"]["content"]
-    assert content_bytes == MODEL_CONFIG_JSON.encode()
+    assert dst_obj.upload.call_args_list[config_idx].kwargs["data"] == MODEL_CONFIG_JSON.encode()
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────
