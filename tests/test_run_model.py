@@ -95,7 +95,7 @@ def test_stage_input_calls_get_and_upload():
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     objects_api.get_object.assert_called_once_with(
-        LAKEFS_DATA_REPO, LAKEFS_BRANCH, "grippeweb/grippeweb-2026-W20.tsv"
+        "data-raw", "main", "grippeweb/grippeweb-2026-W20.tsv"
     )
     assert objects_api.upload_object.call_count == 2
     paths = [c.args[2] for c in objects_api.upload_object.call_args_list]
