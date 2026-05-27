@@ -135,7 +135,7 @@ def test_stage_input_config_uploaded_verbatim():
         c for c in objects_api.upload_object.call_args_list
         if c.args[2].endswith("config.json")
     )
-    assert config_call.kwargs["content"] == MODEL_CONFIG_JSON.encode()
+    assert config_call.kwargs["content"].read() == MODEL_CONFIG_JSON.encode()
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────
