@@ -35,6 +35,15 @@ def stage_input(input_path: str, config_json: str, run_id: str):
         objects_api = lakefs_sdk.ObjectsApi(api)
 
         _, _, path = input_path.replace("lakefs://", "").split("/", 2)
+
+        try:
+            objects_api.stat_object(LAKEFS_DATA_REPO, LAKEFS_BRANCH, path)
+        except Exception:
+            raise RuntimeError(
+                f"Input file not found in LakeFS: {input_path} — "
+                f"make sure the dataset downloader has deposited the file first."
+            )
+
         data = objects_api.get_object(LAKEFS_DATA_REPO, LAKEFS_BRANCH, path)
 
         objects_api.upload_object(
