@@ -125,17 +125,22 @@ def test_stage_input_calls_get_and_upload():
 
 def test_stage_input_config_uploaded_verbatim():
     api_client, objects_api = _lakefs_mocks()
+    captured = {}
+
+    def capture_upload(repo, branch, path, content=None):
+        if path.endswith("config.json"):
+            with open(content, "rb") as f:
+                captured["bytes"] = f.read()
+
+    objects_api.upload_object.side_effect = capture_upload
+
     with (
         patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
         stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
-    config_call = next(
-        c for c in objects_api.upload_object.call_args_list
-        if c.args[2].endswith("config.json")
-    )
-    assert config_call.kwargs["content"] == MODEL_CONFIG_JSON.encode()
+    assert captured["bytes"] == MODEL_CONFIG_JSON.encode()
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────

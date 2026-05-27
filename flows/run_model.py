@@ -34,6 +34,9 @@ def stage_input(input_path: str, config_json: str, run_id: str):
     with lakefs_client() as api:
         objects_api = lakefs_sdk.ObjectsApi(api)
 
+        import os
+        import tempfile
+
         src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
         dst_prefix = f"{run_id}/input"
 
@@ -47,27 +50,39 @@ def stage_input(input_path: str, config_json: str, run_id: str):
                 f"make sure the file exists and credentials are correct."
             ) from e
 
-        try:
-            objects_api.upload_object(
-                LAKEFS_RUN_REPO, LAKEFS_BRANCH,
-                f"{dst_prefix}/data.tsv",
-                content=data,
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to stage data.tsv to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
-            ) from e
+        # The lakefs SDK upload_object only accepts a file path, not raw bytes.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tsv") as f:
+            f.write(data)
+            tmp_data = f.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as f:
+            f.write(config_json.encode())
+            tmp_config = f.name
 
         try:
-            objects_api.upload_object(
-                LAKEFS_RUN_REPO, LAKEFS_BRANCH,
-                f"{dst_prefix}/config.json",
-                content=config_json.encode(),
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to stage config.json to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
-            ) from e
+            try:
+                objects_api.upload_object(
+                    LAKEFS_RUN_REPO, LAKEFS_BRANCH,
+                    f"{dst_prefix}/data.tsv",
+                    content=tmp_data,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to stage data.tsv to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
+                ) from e
+
+            try:
+                objects_api.upload_object(
+                    LAKEFS_RUN_REPO, LAKEFS_BRANCH,
+                    f"{dst_prefix}/config.json",
+                    content=tmp_config,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to stage config.json to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
+                ) from e
+        finally:
+            os.unlink(tmp_data)
+            os.unlink(tmp_config)
 
 
 @task
