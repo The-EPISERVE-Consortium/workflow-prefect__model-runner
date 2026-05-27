@@ -40,7 +40,7 @@ python -m venv --upgrade .venv && source .venv/bin/activate && pip install -r re
 ```
 
 ```bash
-PREFECT_API_URL=http://prefect-server.default.svc.cluster.local:4200/api \
+PREFECT_API_URL=https://your.prefect.server/api \
     python deploy.py
 ```
 
@@ -54,13 +54,3 @@ Re-run `deploy.py` whenever you want to update the deployment (e.g. after changi
 2. Click **Run → Custom run**.
 3. Fill in the parameters (at minimum `input_path`).
 4. Click **Run** — the flow run appears in the dashboard with its run ID, parameters, and live logs.
-
-## Prefect server
-
-```
-prefect-server.default.svc.cluster.local:4200
-```
-
-## Secrets
-
-The Kubernetes secret `lakefs-credentials` must exist in the target namespace with keys `lakefs-access-key` and `lakefs-secret-key`.
