@@ -138,7 +138,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs cp --recursive {lakefs_run_path}/input/ /work/input/"
+                                f"lakectl fs cp -r {lakefs_run_path}/input/ /work/input/"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
@@ -155,7 +155,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"lakectl fs cp --recursive "
+                                f"lakectl fs cp -r "
                                 f"/work/output/ {lakefs_run_path}/output/"
                             ],
                             env=lakefs_env,
