@@ -49,7 +49,7 @@ def stage_input(input_path: str, config_json: str, run_id: str):
             lakefs.repository(src_repo, client=lc)
             .branch(src_branch)
             .object(path)
-            .get()
+            .reader()
             .read()
         )
         logger.info(f"Downloaded {len(data)} bytes from {input_path}")

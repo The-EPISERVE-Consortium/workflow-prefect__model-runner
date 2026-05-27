@@ -30,9 +30,9 @@ def mock_logger():
 def _lakefs_mocks(*, src_get_error=None, dst_upload_errors=None):
     src_obj = MagicMock()
     if src_get_error:
-        src_obj.get.side_effect = src_get_error
+        src_obj.reader.side_effect = src_get_error
     else:
-        src_obj.get.return_value.read.return_value = FAKE_DATA
+        src_obj.reader.return_value.read.return_value = FAKE_DATA
 
     dst_obj = MagicMock()
     if dst_upload_errors is not None:
