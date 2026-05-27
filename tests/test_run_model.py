@@ -22,6 +22,12 @@ MODEL_TAG        = "v0.1.0"
 FAKE_DATA        = b"week\tcases\n2026-W20\t42\n"
 
 
+@pytest.fixture(autouse=True)
+def mock_logger():
+    with patch("flows.run_model.get_run_logger", return_value=MagicMock()):
+        yield
+
+
 def _lakefs_mocks():
     objects_api = MagicMock()
     objects_api.get_object.return_value = FAKE_DATA

@@ -1,6 +1,10 @@
 import os
+import re
+import tempfile
+import time
 from datetime import datetime
 from prefect import flow, task
+from prefect.logging import get_run_logger
 from kubernetes import client, config as k8s_config
 import lakefs_sdk
 
@@ -31,19 +35,22 @@ def stage_input(input_path: str, config_json: str, run_id: str):
       lakefs://model-runs/main/<run-id>/input/data.tsv
       lakefs://model-runs/main/<run-id>/input/config.json
     """
+    logger = get_run_logger()
+
     with lakefs_client() as api:
         objects_api = lakefs_sdk.ObjectsApi(api)
 
-        import os
-        import tempfile
-
         src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
         dst_prefix = f"{run_id}/input"
+        dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
+        dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
 
+        logger.info(f"Downloading input: {input_path}")
         try:
             data = objects_api.get_object(src_repo, src_branch, path)
             if not isinstance(data, bytes):
                 data = data.read()
+            logger.info(f"Downloaded {len(data)} bytes from {input_path}")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to read input file from LakeFS: {input_path} — "
@@ -59,30 +66,55 @@ def stage_input(input_path: str, config_json: str, run_id: str):
             tmp_config = f.name
 
         try:
+            logger.info(f"Staging data.tsv → {dst_data}")
             try:
                 objects_api.upload_object(
                     LAKEFS_RUN_REPO, LAKEFS_BRANCH,
                     f"{dst_prefix}/data.tsv",
                     content=tmp_data,
                 )
+                logger.info("data.tsv staged successfully")
             except Exception as e:
-                raise RuntimeError(
-                    f"Failed to stage data.tsv to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
-                ) from e
+                raise RuntimeError(f"Failed to stage data.tsv to {dst_data}") from e
 
+            logger.info(f"Staging config.json → {dst_config}")
             try:
                 objects_api.upload_object(
                     LAKEFS_RUN_REPO, LAKEFS_BRANCH,
                     f"{dst_prefix}/config.json",
                     content=tmp_config,
                 )
+                logger.info("config.json staged successfully")
             except Exception as e:
-                raise RuntimeError(
-                    f"Failed to stage config.json to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
-                ) from e
+                raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
         finally:
             os.unlink(tmp_data)
             os.unlink(tmp_config)
+
+
+def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> str:
+    """Collect logs from all containers of the Job's pod."""
+    try:
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"job-name={run_id}",
+        ).items
+        if not pods:
+            return "(no pods found)"
+        pod_name = pods[0].metadata.name
+        lines = []
+        for container in ["lakefs-pull", "model", "lakefs-push"]:
+            try:
+                log = core_v1.read_namespaced_pod_log(
+                    name=pod_name, namespace=namespace,
+                    container=container, tail_lines=50,
+                )
+                lines.append(f"--- {container} ---\n{log}")
+            except Exception as e:
+                lines.append(f"--- {container} --- (could not retrieve: {e})")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(could not collect pod logs: {e})"
 
 
 @task
@@ -95,8 +127,11 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
       init: model        → reads /work/input/, writes /work/output/
       container: lakefs-push → uploads /work/output/ → LakeFS run_id/output/
     """
+    logger = get_run_logger()
+
     k8s_config.load_incluster_config()
     batch_v1 = client.BatchV1Api()
+    core_v1  = client.CoreV1Api()
 
     lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}"
     lakefs_host = os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT)
@@ -176,15 +211,20 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
         ),
     )
 
+    logger.info(f"Submitting Kubernetes Job: {run_id}")
     batch_v1.create_namespaced_job(namespace=namespace, body=job)
+    logger.info("Job submitted, waiting for completion...")
 
-    import time
     while True:
         status = batch_v1.read_namespaced_job(name=run_id, namespace=namespace).status
         if status.succeeded:
+            logger.info(f"Job {run_id} completed successfully")
             break
         if status.failed:
-            raise RuntimeError(f"Job {run_id} failed")
+            pod_logs = _collect_pod_logs(core_v1, run_id, namespace)
+            raise RuntimeError(
+                f"Job {run_id} failed\n\nPod logs:\n{pod_logs}"
+            )
         time.sleep(5)
 
 
@@ -210,7 +250,6 @@ def model_pipeline(
         model_tag:    Image tag
         namespace:    Kubernetes namespace
     """
-    import re
     timestamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     slug = model_image.split('/')[-1]
     slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
