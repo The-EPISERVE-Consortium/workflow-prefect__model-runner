@@ -34,13 +34,13 @@ def stage_input(input_path: str, config_json: str, run_id: str):
     with lakefs_client() as api:
         objects_api = lakefs_sdk.ObjectsApi(api)
 
-        from io import BytesIO
-
         src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
         dst_prefix = f"{run_id}/input"
 
         try:
             data = objects_api.get_object(src_repo, src_branch, path)
+            if not isinstance(data, bytes):
+                data = data.read()
         except Exception as e:
             raise RuntimeError(
                 f"Failed to read input file from LakeFS: {input_path} — "
@@ -51,7 +51,7 @@ def stage_input(input_path: str, config_json: str, run_id: str):
             objects_api.upload_object(
                 LAKEFS_RUN_REPO, LAKEFS_BRANCH,
                 f"{dst_prefix}/data.tsv",
-                content=BytesIO(data),
+                content=data,
             )
         except Exception as e:
             raise RuntimeError(
@@ -62,7 +62,7 @@ def stage_input(input_path: str, config_json: str, run_id: str):
             objects_api.upload_object(
                 LAKEFS_RUN_REPO, LAKEFS_BRANCH,
                 f"{dst_prefix}/config.json",
-                content=BytesIO(config_json.encode()),
+                content=config_json.encode(),
             )
         except Exception as e:
             raise RuntimeError(
