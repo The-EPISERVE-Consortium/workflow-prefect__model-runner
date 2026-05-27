@@ -32,6 +32,19 @@ Output is available at:
 lakefs://model-runs/main/<run-id>/output/predictions.tsv
 ```
 
+## Deployment
+
+Register the flow with the Prefect server by running `deploy.py` from any machine that can reach the server:
+
+```bash
+PREFECT_API_URL=http://prefect-server.default.svc.cluster.local:4200/api \
+    python deploy.py
+```
+
+This creates (or updates) a deployment named `model-runner` on the `kubernetes-pool` work pool, pointing at the `main` branch of this repo. Both names can be overridden via `WORK_POOL_NAME` and `DEPLOYMENT_NAME` environment variables.
+
+Re-run `deploy.py` whenever you want to update the deployment (e.g. after changing default parameters or the image tag).
+
 ## Triggering manually via the Prefect UI
 
 1. Open the Prefect UI and navigate to **Flows → model-pipeline**.
