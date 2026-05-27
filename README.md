@@ -36,6 +36,10 @@ lakefs://model-runs/main/<run-id>/output/predictions.tsv
 Register the flow with the Prefect server by running `deploy.py` from any machine that can reach the server:
 
 ```bash
+python -m venv --upgrade .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+```bash
 PREFECT_API_URL=http://prefect-server.default.svc.cluster.local:4200/api \
     python deploy.py
 ```
