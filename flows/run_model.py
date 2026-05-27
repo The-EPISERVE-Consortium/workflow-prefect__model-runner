@@ -34,28 +34,40 @@ def stage_input(input_path: str, config_json: str, run_id: str):
     with lakefs_client() as api:
         objects_api = lakefs_sdk.ObjectsApi(api)
 
+        from io import BytesIO
+
         src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
+        dst_prefix = f"{run_id}/input"
 
         try:
-            objects_api.stat_object(src_repo, src_branch, path)
-        except Exception:
+            data = objects_api.get_object(src_repo, src_branch, path)
+        except Exception as e:
             raise RuntimeError(
-                f"Input file not found in LakeFS: {input_path} — "
-                f"make sure the dataset downloader has deposited the file first."
+                f"Failed to read input file from LakeFS: {input_path} — "
+                f"make sure the file exists and credentials are correct."
+            ) from e
+
+        try:
+            objects_api.upload_object(
+                LAKEFS_RUN_REPO, LAKEFS_BRANCH,
+                f"{dst_prefix}/data.tsv",
+                content=BytesIO(data),
             )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to stage data.tsv to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
+            ) from e
 
-        data = objects_api.get_object(src_repo, src_branch, path)
-
-        objects_api.upload_object(
-            LAKEFS_RUN_REPO, LAKEFS_BRANCH,
-            f"{run_id}/input/data.tsv",
-            content=data,
-        )
-        objects_api.upload_object(
-            LAKEFS_RUN_REPO, LAKEFS_BRANCH,
-            f"{run_id}/input/config.json",
-            content=config_json.encode(),
-        )
+        try:
+            objects_api.upload_object(
+                LAKEFS_RUN_REPO, LAKEFS_BRANCH,
+                f"{dst_prefix}/config.json",
+                content=BytesIO(config_json.encode()),
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to stage config.json to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
+            ) from e
 
 
 @task

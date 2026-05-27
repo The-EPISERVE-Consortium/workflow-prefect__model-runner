@@ -75,15 +75,35 @@ def test_input_path_parsing():
 
 def test_stage_input_raises_when_file_missing():
     api_client, objects_api = _lakefs_mocks()
-    objects_api.stat_object.side_effect = Exception("404 Not Found")
+    objects_api.get_object.side_effect = Exception("404 Not Found")
     with (
         patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
-        with pytest.raises(RuntimeError, match="Input file not found in LakeFS"):
+        with pytest.raises(RuntimeError, match="Failed to read input file from LakeFS"):
             stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
-    objects_api.get_object.assert_not_called()
+
+def test_stage_input_raises_when_data_upload_fails():
+    api_client, objects_api = _lakefs_mocks()
+    objects_api.upload_object.side_effect = Exception("permission denied")
+    with (
+        patch("flows.run_model.lakefs_client", return_value=api_client),
+        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
+    ):
+        with pytest.raises(RuntimeError, match="Failed to stage data.tsv"):
+            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+
+
+def test_stage_input_raises_when_config_upload_fails():
+    api_client, objects_api = _lakefs_mocks()
+    objects_api.upload_object.side_effect = [None, Exception("permission denied")]
+    with (
+        patch("flows.run_model.lakefs_client", return_value=api_client),
+        patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
+    ):
+        with pytest.raises(RuntimeError, match="Failed to stage config.json"):
+            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
 
 def test_stage_input_calls_get_and_upload():
