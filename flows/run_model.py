@@ -138,7 +138,8 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs cp -r {lakefs_run_path}/input/ /work/input/"
+                                f"lakectl fs cp {lakefs_run_path}/input/data.tsv /work/input/data.tsv && "
+                                f"lakectl fs cp {lakefs_run_path}/input/config.json /work/input/config.json"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
