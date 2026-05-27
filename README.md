@@ -11,10 +11,9 @@ Prefect flow that orchestrates epidemiological model containers on Kubernetes. I
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `input_path` | `str` | *(required)* | LakeFS path to the input TSV, e.g. `lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv` |
-| `model_image` | `str` | `ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel` | GHCR image name for the model container |
+| `model_image` | `str` | *(required)* | GHCR image name, e.g. `ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel` |
+| `model_config` | `str` | *(required)* | JSON string written verbatim as `config.json` in the input directory, e.g. `{"horizon_weeks": 4, "n_reference_weeks": 4}` |
 | `model_tag` | `str` | `latest` | Image tag |
-| `horizon_weeks` | `int` | `4` | Forecast horizon passed to the model via `config.json` |
-| `n_reference_weeks` | `int` | `4` | Reference window passed to the model via `config.json` |
 | `namespace` | `str` | `default` | Kubernetes namespace in which the Job is created |
 
 ### What it does

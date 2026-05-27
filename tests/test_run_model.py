@@ -14,12 +14,12 @@ from flows.run_model import (
     LAKEFS_ENDPOINT,
 )
 
-INPUT_PATH = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
-RUN_ID = "model__prediction__grippeweb__baseline-nullmodel-20260527-143022"
-CONFIG = {"horizon_weeks": 4, "n_reference_weeks": 4}
-MODEL_IMAGE = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
-MODEL_TAG = "v0.1.0"
-FAKE_DATA = b"week\tcases\n2026-W20\t42\n"
+INPUT_PATH       = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
+RUN_ID           = "model__prediction__grippeweb__baseline-nullmodel-20260527-143022"
+MODEL_CONFIG_JSON = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
+MODEL_IMAGE      = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
+MODEL_TAG        = "v0.1.0"
+FAKE_DATA        = b"week\tcases\n2026-W20\t42\n"
 
 
 def _lakefs_mocks():
@@ -49,7 +49,11 @@ def _k8s_batch_mock(*, succeeded: bool):
 
 def test_run_id_format():
     with patch("flows.run_model.stage_input"), patch("flows.run_model.submit_and_wait"):
-        result = model_pipeline.fn(input_path=INPUT_PATH, model_image=MODEL_IMAGE)
+        result = model_pipeline.fn(
+            input_path=INPUT_PATH,
+            model_image=MODEL_IMAGE,
+            model_config=MODEL_CONFIG_JSON,
+        )
     # lakefs://model-runs/main/<run-id>/output/  →  index 4
     run_id = result.split("/")[4]
     assert re.match(
@@ -72,10 +76,10 @@ def test_input_path_parsing():
 def test_stage_input_calls_get_and_upload():
     api_client, objects_api = _lakefs_mocks()
     with (
-        patch("flows.run_model.lakefs_sdk.ApiClient", return_value=api_client),
+        patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
-        stage_input.fn(input_path=INPUT_PATH, config=CONFIG, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, model_config=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     objects_api.get_object.assert_called_once_with(
         LAKEFS_DATA_REPO, LAKEFS_BRANCH, "grippeweb/grippeweb-2026-W20.tsv"
@@ -86,19 +90,19 @@ def test_stage_input_calls_get_and_upload():
     assert f"{RUN_ID}/input/config.json" in paths
 
 
-def test_stage_input_config_is_valid_json():
+def test_stage_input_config_uploaded_verbatim():
     api_client, objects_api = _lakefs_mocks()
     with (
-        patch("flows.run_model.lakefs_sdk.ApiClient", return_value=api_client),
+        patch("flows.run_model.lakefs_client", return_value=api_client),
         patch("flows.run_model.lakefs_sdk.ObjectsApi", return_value=objects_api),
     ):
-        stage_input.fn(input_path=INPUT_PATH, config=CONFIG, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, model_config=MODEL_CONFIG_JSON, run_id=RUN_ID)
 
     config_call = next(
         c for c in objects_api.upload_object.call_args_list
         if c.args[2].endswith("config.json")
     )
-    assert json.loads(config_call.kwargs["content"]) == CONFIG
+    assert config_call.kwargs["content"] == MODEL_CONFIG_JSON.encode()
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────
@@ -135,7 +139,7 @@ def test_job_secret_refs():
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
-    # lakefs-pull is the init container that carries the credentials
+    # lakefs-pull carries the credentials for lakectl
     env = job.spec.template.spec.init_containers[0].env
     secret_refs = {
         e.name: e.value_from.secret_key_ref
@@ -183,7 +187,11 @@ def test_pipeline_return_path():
         patch("flows.run_model.stage_input") as mock_stage,
         patch("flows.run_model.submit_and_wait") as mock_submit,
     ):
-        result = model_pipeline.fn(input_path=INPUT_PATH, model_image=MODEL_IMAGE)
+        result = model_pipeline.fn(
+            input_path=INPUT_PATH,
+            model_image=MODEL_IMAGE,
+            model_config=MODEL_CONFIG_JSON,
+        )
 
     assert result.startswith(f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/")
     assert result.endswith("/output/")

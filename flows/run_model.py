@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from prefect import flow, task
 from kubernetes import client, config as k8s_config
@@ -11,42 +12,40 @@ LAKEFS_BRANCH    = "main"
 
 
 def lakefs_client() -> lakefs_sdk.ApiClient:
-    cfg = lakefs_sdk.Configuration(host=LAKEFS_ENDPOINT)
-    # credentials injected via env: LAKEFS_ACCESS_KEY_ID, LAKEFS_SECRET_ACCESS_KEY
+    cfg = lakefs_sdk.Configuration(
+        host=os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT),
+        username=os.environ["LAKEFS_ACCESS_KEY"],
+        password=os.environ["LAKEFS_SECRET_KEY"],
+    )
     return lakefs_sdk.ApiClient(cfg)
 
 
 @task
-def stage_input(input_path: str, config: dict, run_id: str):
+def stage_input(input_path: str, model_config: str, run_id: str):
     """
     Copy the input file from data-raw and write config.json into the run path.
 
-    input_path: e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
+    input_path:   e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
+    model_config: JSON string written verbatim as config.json
     Writes to:
       lakefs://model-runs/main/<run-id>/input/data.tsv
       lakefs://model-runs/main/<run-id>/input/config.json
     """
-    import json
-    with lakefs_sdk.ApiClient() as api:
+    with lakefs_client() as api:
         objects_api = lakefs_sdk.ObjectsApi(api)
 
-        # read source file from data-raw
-        # parse lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
         _, _, path = input_path.replace("lakefs://", "").split("/", 2)
         data = objects_api.get_object(LAKEFS_DATA_REPO, LAKEFS_BRANCH, path)
 
-        # write data.tsv to model-runs
         objects_api.upload_object(
             LAKEFS_RUN_REPO, LAKEFS_BRANCH,
             f"{run_id}/input/data.tsv",
             content=data,
         )
-
-        # write config.json to model-runs
         objects_api.upload_object(
             LAKEFS_RUN_REPO, LAKEFS_BRANCH,
             f"{run_id}/input/config.json",
-            content=json.dumps(config).encode(),
+            content=model_config.encode(),
         )
 
 
@@ -64,9 +63,10 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
     batch_v1 = client.BatchV1Api()
 
     lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}"
+    lakefs_host = os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT)
 
     lakefs_env = [
-        client.V1EnvVar(name="LAKECTL_SERVER_ENDPOINT_URL", value=LAKEFS_ENDPOINT),
+        client.V1EnvVar(name="LAKECTL_SERVER_ENDPOINT_URL", value=lakefs_host),
         client.V1EnvVar(
             name="LAKECTL_CREDENTIALS_ACCESS_KEY_ID",
             value_from=client.V1EnvVarSource(
@@ -139,7 +139,6 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
 
     batch_v1.create_namespaced_job(namespace=namespace, body=job)
 
-    # wait for completion
     import time
     while True:
         status = batch_v1.read_namespaced_job(name=run_id, namespace=namespace).status
@@ -153,10 +152,9 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
 @flow
 def model_pipeline(
     input_path: str,
-    model_image: str = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel",
+    model_image: str,
+    model_config: str,
     model_tag: str = "latest",
-    horizon_weeks: int = 4,
-    n_reference_weeks: int = 4,
     namespace: str = "default",
 ):
     """
@@ -164,22 +162,18 @@ def model_pipeline(
     writing output back to LakeFS.
 
     Args:
-        input_path:        LakeFS path to the input TSV,
-                           e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
-        model_image:       GHCR image name
-        model_tag:         Image tag
-        horizon_weeks:     Forecast horizon passed to the model via config.json
-        n_reference_weeks: Reference window passed to the model via config.json
-        namespace:         Kubernetes namespace
+        input_path:   LakeFS path to the input TSV,
+                      e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
+        model_image:  GHCR image name,
+                      e.g. ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel
+        model_config: JSON string written verbatim as config.json in the input directory,
+                      e.g. {"horizon_weeks": 4, "n_reference_weeks": 4}
+        model_tag:    Image tag
+        namespace:    Kubernetes namespace
     """
     run_id = f"{model_image.split('/')[-1]}-{datetime.now():%Y%m%d-%H%M%S}"
 
-    config = {
-        "horizon_weeks": horizon_weeks,
-        "n_reference_weeks": n_reference_weeks,
-    }
-
-    stage_input(input_path=input_path, config=config, run_id=run_id)
+    stage_input(input_path=input_path, model_config=model_config, run_id=run_id)
     submit_and_wait(
         run_id=run_id,
         model_image=model_image,
