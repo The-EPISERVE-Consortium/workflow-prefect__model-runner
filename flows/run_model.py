@@ -80,6 +80,31 @@ def stage_input(input_path: str, config_json: str, run_id: str):
         raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
 
 
+_BAD_WAITING_REASONS = {"InvalidImageName", "ImagePullBackOff", "ErrImagePull"}
+
+
+def _check_for_stuck_pods(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> None:
+    try:
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace, label_selector=f"job-name={run_id}"
+        ).items
+        for pod in pods:
+            all_statuses = list(pod.status.init_container_statuses or []) + \
+                           list(pod.status.container_statuses or [])
+            for cs in all_statuses:
+                if cs.state and cs.state.waiting and \
+                        cs.state.waiting.reason in _BAD_WAITING_REASONS:
+                    msg = cs.state.waiting.message or ""
+                    raise RuntimeError(
+                        f"Container '{cs.name}' cannot start: {cs.state.waiting.reason}"
+                        + (f" — {msg}" if msg else "")
+                    )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # unable to check pod state, keep polling
+
+
 def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> str:
     """Collect logs from all containers of the Job's pod."""
     try:
@@ -211,6 +236,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
             raise RuntimeError(
                 f"Job {run_id} failed\n\nPod logs:\n{pod_logs}"
             )
+        _check_for_stuck_pods(core_v1, run_id, namespace)
         time.sleep(5)
 
 

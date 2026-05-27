@@ -220,6 +220,30 @@ def test_submit_polls_until_succeeded():
     assert batch_v1.read_namespaced_job.call_count == 2
 
 
+def test_submit_raises_on_stuck_image():
+    batch_v1 = MagicMock()
+    batch_v1.read_namespaced_job.return_value.status = MagicMock(succeeded=None, failed=None)
+
+    cs = MagicMock()
+    cs.name = "model"
+    cs.state.waiting.reason = "InvalidImageName"
+    cs.state.waiting.message = "invalid reference format"
+
+    core_v1 = MagicMock()
+    core_v1.list_namespaced_pod.return_value.items = [
+        MagicMock(status=MagicMock(init_container_statuses=[cs], container_statuses=[]))
+    ]
+
+    with (
+        patch("flows.run_model.k8s_config.load_incluster_config"),
+        patch("flows.run_model.client.BatchV1Api", return_value=batch_v1),
+        patch("flows.run_model.client.CoreV1Api", return_value=core_v1),
+        patch("time.sleep"),
+    ):
+        with pytest.raises(RuntimeError, match="InvalidImageName"):
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+
+
 def test_submit_raises_on_failure():
     batch_v1 = _k8s_batch_mock(succeeded=False)
     with (
