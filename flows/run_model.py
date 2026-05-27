@@ -207,7 +207,13 @@ def model_pipeline(
         model_tag:    Image tag
         namespace:    Kubernetes namespace
     """
-    run_id = f"{model_image.split('/')[-1]}-{datetime.now():%Y%m%d-%H%M%S}"
+    import re
+    timestamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    slug = model_image.split('/')[-1]
+    slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
+    slug = re.sub(r'-+', '-', slug).strip('-') # collapse and trim hyphens
+    slug = slug[:63 - len(timestamp) - 1]      # enforce 63-char limit
+    run_id = f"{slug}-{timestamp}"
 
     stage_input(input_path=input_path, config_json=config_json, run_id=run_id)
     submit_and_wait(

@@ -15,7 +15,7 @@ from flows.run_model import (
 )
 
 INPUT_PATH       = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
-RUN_ID           = "model__prediction__grippeweb__baseline-nullmodel-20260527-143022"
+RUN_ID           = "model-prediction-grippeweb-baseline-nullmodel-20260527-143022"
 MODEL_CONFIG_JSON = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
 MODEL_IMAGE      = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
 MODEL_TAG        = "v0.1.0"
@@ -57,9 +57,10 @@ def test_run_id_format():
     # lakefs://model-runs/main/<run-id>/output/  →  index 4
     run_id = result.split("/")[4]
     assert re.match(
-        r"^model__prediction__grippeweb__baseline-nullmodel-\d{8}-\d{6}$",
+        r"^model-prediction-grippeweb-baseline-nullmodel-\d{8}-\d{6}$",
         run_id,
     )
+    assert len(run_id) <= 63
 
 
 # ── input path parsing ────────────────────────────────────────────────────────
