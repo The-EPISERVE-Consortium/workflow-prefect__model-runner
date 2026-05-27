@@ -236,6 +236,8 @@ def model_pipeline(
         model_tag:    Image tag
         namespace:    Kubernetes namespace
     """
+    model_image = model_image.strip()
+    model_tag = model_tag.strip()
     timestamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     slug = model_image.split('/')[-1]
     slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
