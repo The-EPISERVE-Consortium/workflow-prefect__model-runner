@@ -43,22 +43,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Rebuild image for test
-        uses: docker/build-push-action@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ env.IMAGE_NAME }}:test
-          cache-from: type=gha
+          python-version: "3.11"
 
-      - name: Verify flow imports
-        run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:test \
-            python -c "from flows.run_model import model_pipeline; print('OK')"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: PYTHONPATH=. pytest tests/ -v
 
   push:
     needs: test

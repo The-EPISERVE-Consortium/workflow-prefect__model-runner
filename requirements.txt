@@ -2,3 +2,4 @@ prefect>=3.0
 kubernetes
 lakefs-sdk
 pandas
+pytest
