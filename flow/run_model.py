@@ -7,9 +7,9 @@ from prefect.logging import get_run_logger
 from kubernetes import client, config as k8s_config
 import lakefs
 from lakefs.client import Client
+from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 
 
-LAKEFS_ENDPOINT  = "https://lake-episerve.zib.de/"
 LAKEFS_DATA_REPO = "data-raw"
 LAKEFS_RUN_REPO  = "model-runs"
 LAKEFS_BRANCH    = "main"
@@ -17,7 +17,7 @@ LAKEFS_BRANCH    = "main"
 
 def _lakefs_client() -> Client:
     return Client(
-        host=os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT),
+        host=os.environ["LAKEFS_HOST"],
         username=os.environ["LAKEFS_ACCESS_KEY"],
         password=os.environ["LAKEFS_SECRET_KEY"],
     )
@@ -80,56 +80,6 @@ def stage_input(input_path: str, config_json: str, run_id: str):
         raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
 
 
-_BAD_WAITING_REASONS = {"InvalidImageName", "ImagePullBackOff", "ErrImagePull"}
-
-
-def _check_for_stuck_pods(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> None:
-    try:
-        pods = core_v1.list_namespaced_pod(
-            namespace=namespace, label_selector=f"job-name={run_id}"
-        ).items
-        for pod in pods:
-            all_statuses = list(pod.status.init_container_statuses or []) + \
-                           list(pod.status.container_statuses or [])
-            for cs in all_statuses:
-                if cs.state and cs.state.waiting and \
-                        cs.state.waiting.reason in _BAD_WAITING_REASONS:
-                    msg = cs.state.waiting.message or ""
-                    raise RuntimeError(
-                        f"Container '{cs.name}' cannot start: {cs.state.waiting.reason}"
-                        + (f" — {msg}" if msg else "")
-                    )
-    except RuntimeError:
-        raise
-    except Exception:
-        pass  # unable to check pod state, keep polling
-
-
-def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> str:
-    """Collect logs from all containers of the Job's pod."""
-    try:
-        pods = core_v1.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=f"job-name={run_id}",
-        ).items
-        if not pods:
-            return "(no pods found)"
-        pod_name = pods[0].metadata.name
-        lines = []
-        for container in ["lakefs-pull", "model", "lakefs-push"]:
-            try:
-                log = core_v1.read_namespaced_pod_log(
-                    name=pod_name, namespace=namespace,
-                    container=container, tail_lines=50,
-                )
-                lines.append(f"--- {container} ---\n{log}")
-            except Exception as e:
-                lines.append(f"--- {container} --- (could not retrieve: {e})")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"(could not collect pod logs: {e})"
-
-
 @task
 def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: str = "default"):
     """
@@ -147,7 +97,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
     core_v1  = client.CoreV1Api()
 
     lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}"
-    lakefs_host = os.environ.get("LAKEFS_HOST", LAKEFS_ENDPOINT)
+    lakefs_host = os.environ["LAKEFS_HOST"]
 
     lakefs_env = [
         client.V1EnvVar(name="LAKECTL_SERVER_ENDPOINT_URL", value=lakefs_host),

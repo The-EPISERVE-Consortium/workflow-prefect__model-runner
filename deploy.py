@@ -10,7 +10,7 @@ can reach the Prefect server:
 
 import os
 from prefect.runner.storage import GitRepository
-from flows.run_model import model_pipeline
+from flow.run_model import model_pipeline
 
 GITHUB_REPO_URL = "https://github.com/The-EPISERVE-Consortium/workflow-prefect__model-runner"
 DOCKER_IMAGE    = "ghcr.io/the-episerve-consortium/workflow-prefect__model-runner:main"
@@ -20,7 +20,7 @@ DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "model-runner")
 if __name__ == "__main__":
     model_pipeline.from_source(
         source=GitRepository(url=GITHUB_REPO_URL, branch="main"),
-        entrypoint="flows/run_model.py:model_pipeline",
+        entrypoint="flow/run_model.py:model_pipeline",
     ).deploy(
         name=DEPLOYMENT_NAME,
         work_pool_name=WORK_POOL_NAME,
