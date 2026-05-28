@@ -1,7 +1,8 @@
+import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from prefect import flow, task
 from prefect.logging import get_run_logger
 from kubernetes import client, config as k8s_config
@@ -78,6 +79,25 @@ def stage_input(input_path: str, config_json: str, run_id: str):
         logger.info("config.json staged successfully")
     except Exception as e:
         raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
+
+
+@task
+def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str):
+    computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
+    metadata = json.dumps({
+        "model_name":       model_image.split('/')[-1],
+        "git_commit":       "",
+        "docker_tag":       model_tag,
+        "run_timestamp":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status":           status,
+        "computation_time": computation_time,
+    }, indent=2).encode()
+
+    lc = _lakefs_client()
+    lakefs.repository(LAKEFS_RUN_REPO, client=lc) \
+        .branch(LAKEFS_BRANCH) \
+        .object(f"{run_id}/metadata.json") \
+        .upload(data=metadata, content_type="application/json")
 
 
 @task
@@ -214,7 +234,8 @@ def model_pipeline(
     """
     model_image = model_image.strip()
     model_tag = model_tag.strip()
-    timestamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    run_start = datetime.now(timezone.utc)
+    timestamp = run_start.strftime("%Y%m%d-%H%M%S")
     slug = model_image.split('/')[-1]
     slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
     slug = re.sub(r'-+', '-', slug).strip('-') # collapse and trim hyphens
@@ -222,11 +243,22 @@ def model_pipeline(
     run_id = f"{slug}-{timestamp}"
 
     stage_input(input_path=input_path, config_json=config_json, run_id=run_id)
-    submit_and_wait(
-        run_id=run_id,
-        model_image=model_image,
-        model_tag=model_tag,
-        namespace=namespace,
-    )
+    status = "failed"
+    try:
+        submit_and_wait(
+            run_id=run_id,
+            model_image=model_image,
+            model_tag=model_tag,
+            namespace=namespace,
+        )
+        status = "success"
+    finally:
+        write_metadata(
+            run_id=run_id,
+            model_image=model_image,
+            model_tag=model_tag,
+            run_start=run_start,
+            status=status,
+        )
 
     return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}/output/"

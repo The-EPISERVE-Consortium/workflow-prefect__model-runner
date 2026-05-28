@@ -86,7 +86,7 @@ def _k8s_batch_mock(*, succeeded: bool):
 # ── run_id format ─────────────────────────────────────────────────────────────
 
 def test_run_id_format():
-    with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait"):
+    with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait"), patch("flow.run_model.write_metadata"):
         result = model_pipeline.fn(
             input_path=INPUT_PATH,
             model_image=MODEL_IMAGE,
@@ -267,6 +267,7 @@ def test_pipeline_return_path():
     with (
         patch("flow.run_model.stage_input") as mock_stage,
         patch("flow.run_model.submit_and_wait") as mock_submit,
+        patch("flow.run_model.write_metadata"),
     ):
         result = model_pipeline.fn(
             input_path=INPUT_PATH,
