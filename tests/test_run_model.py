@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from flow.run_model import (
+    mint_qid,
     stage_input,
     submit_and_wait,
     model_pipeline,
@@ -81,6 +82,16 @@ def _k8s_batch_mock(*, succeeded: bool):
         MagicMock(status=terminal),
     ]
     return batch_v1
+
+
+# ── mint_qid ──────────────────────────────────────────────────────────────────
+
+def test_mint_qid_format():
+    assert re.match(r"^Q\d+$", mint_qid())
+
+
+def test_mint_qid_unique():
+    assert mint_qid() != mint_qid()
 
 
 # ── run_id format ─────────────────────────────────────────────────────────────

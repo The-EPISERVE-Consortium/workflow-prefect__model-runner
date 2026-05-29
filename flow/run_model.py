@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 LAKEFS_DATA_REPO = "data-raw"
 LAKEFS_RUN_REPO  = "model-runs"
 LAKEFS_BRANCH    = "main"
+
+
+def mint_qid() -> str:
+    return f"Q{int(time.time())}{random.randint(0, 999):03d}"
 
 
 def lakefs_uri_to_http(uri: str) -> str:
@@ -102,7 +107,7 @@ def stage_input(input_path: str, config_json: str, run_id: str):
 
 
 @task
-def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str):
+def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str, qid: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     model_name = model_image.split('/')[-1]
 
@@ -135,6 +140,8 @@ def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: dat
             {
                 "@id": "./",
                 "@type": "Dataset",
+                "identifier":       qid,
+                "qid":              qid,
                 "name":             model_name,
                 "description":      f"Model run of {model_name} (tag: {model_tag})",
                 "datePublished":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -289,6 +296,7 @@ def model_pipeline(
     model_image = model_image.strip()
     model_tag = model_tag.strip()
     run_start = datetime.now(timezone.utc)
+    qid = mint_qid()
     timestamp = run_start.strftime("%Y%m%d-%H%M%S")
     slug = model_image.split('/')[-1]
     slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
@@ -313,6 +321,7 @@ def model_pipeline(
             model_tag=model_tag,
             run_start=run_start,
             status=status,
+            qid=qid,
         )
 
     return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}/output/"
