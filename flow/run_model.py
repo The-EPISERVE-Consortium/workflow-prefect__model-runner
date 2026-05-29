@@ -2,7 +2,6 @@ import json
 import mimetypes
 import os
 import random
-import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -50,20 +49,20 @@ def _lakefs_client() -> Client:
 
 
 @task
-def stage_input(input_path: str, config_json: str, run_id: str):
+def stage_input(input_path: str, config_json: str, qid: str):
     """
     Copy the input file from data-raw and write config.json into the run path.
 
     input_path:   e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
     config_json: JSON string written verbatim as config.json
     Writes to:
-      lakefs://model-runs/main/<run-id>/input/data.tsv
-      lakefs://model-runs/main/<run-id>/input/config.json
+      lakefs://model-runs/main/<qid>/input/data.tsv
+      lakefs://model-runs/main/<qid>/input/config.json
     """
     logger = get_run_logger()
 
     src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
-    dst_prefix = f"{run_id}/input"
+    dst_prefix = f"{qid}/input"
     dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
     dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
 
@@ -107,7 +106,7 @@ def stage_input(input_path: str, config_json: str, run_id: str):
 
 
 @task
-def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str, qid: str):
+def write_metadata(qid: str, model_image: str, model_tag: str, run_start: datetime, status: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     model_name = model_image.split('/')[-1]
 
@@ -115,9 +114,9 @@ def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: dat
     branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
     file_entities = []
     has_part = []
-    prefixes = [f"{run_id}/input/"]
+    prefixes = [f"{qid}/input/"]
     if status == "success":
-        prefixes.append(f"{run_id}/output/")
+        prefixes.append(f"{qid}/output/")
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
         uri = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{obj.path}"
         http_url = lakefs_uri_to_http(uri)
@@ -157,19 +156,19 @@ def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: dat
     }, indent=2).encode()
 
     branch_handle \
-        .object(f"{run_id}/ro-crate-metadata.json") \
+        .object(f"{qid}/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
 
 @task
-def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: str = "default"):
+def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, namespace: str = "default"):
     """
     Submit a Kubernetes Job with the three-container pattern and wait for completion.
 
     Pod structure:
-      init: lakefs-pull  → downloads run_id/input/ from LakeFS → /work/input/
+      init: lakefs-pull  → downloads qid/input/ from LakeFS → /work/input/
       init: model        → reads /work/input/, writes /work/output/
-      container: lakefs-push → uploads /work/output/ → LakeFS run_id/output/
+      container: lakefs-push → uploads /work/output/ → LakeFS qid/output/
     """
     logger = get_run_logger()
 
@@ -177,7 +176,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, namespace: st
     batch_v1 = client.BatchV1Api()
     core_v1  = client.CoreV1Api()
 
-    lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}"
+    lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{qid}"
     lakefs_host = os.environ["LAKEFS_HOST"]
 
     lakefs_env = [
@@ -297,31 +296,26 @@ def model_pipeline(
     model_tag = model_tag.strip()
     run_start = datetime.now(timezone.utc)
     qid = mint_qid()
-    timestamp = run_start.strftime("%Y%m%d-%H%M%S")
-    slug = model_image.split('/')[-1]
-    slug = re.sub(r'[^a-z0-9-]', '-', slug)   # replace invalid chars
-    slug = re.sub(r'-+', '-', slug).strip('-') # collapse and trim hyphens
-    slug = slug[:63 - len(timestamp) - 1]      # enforce 63-char limit
-    run_id = f"{slug}-{timestamp}"
+    run_id = f"model-runner__{qid}"
 
-    stage_input(input_path=input_path, config_json=config_json, run_id=run_id)
+    stage_input(input_path=input_path, config_json=config_json, qid=qid)
     status = "failed"
     try:
         submit_and_wait(
             run_id=run_id,
             model_image=model_image,
             model_tag=model_tag,
+            qid=qid,
             namespace=namespace,
         )
         status = "success"
     finally:
         write_metadata(
-            run_id=run_id,
+            qid=qid,
             model_image=model_image,
             model_tag=model_tag,
             run_start=run_start,
             status=status,
-            qid=qid,
         )
 
-    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{run_id}/output/"
+    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{qid}/output/"

@@ -13,12 +13,13 @@ from flow.run_model import (
     LAKEFS_BRANCH,
 )
 
-INPUT_PATH       = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
-RUN_ID           = "model-prediction-grippeweb-baseline-nullmodel-20260527-143022"
+INPUT_PATH        = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
+QID               = "Q1748526042817"
+RUN_ID            = f"model-runner__{QID}"
 MODEL_CONFIG_JSON = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
-MODEL_IMAGE      = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
-MODEL_TAG        = "v0.1.0"
-FAKE_DATA        = b"week\tcases\n2026-W20\t42\n"
+MODEL_IMAGE       = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
+MODEL_TAG         = "v0.1.0"
+FAKE_DATA         = b"week\tcases\n2026-W20\t42\n"
 
 
 @pytest.fixture(autouse=True)
@@ -94,21 +95,29 @@ def test_mint_qid_unique():
     assert mint_qid() != mint_qid()
 
 
-# ── run_id format ─────────────────────────────────────────────────────────────
+# ── run_id / return path ──────────────────────────────────────────────────────
 
-def test_run_id_format():
+def test_return_path_uses_qid():
     with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait"), patch("flow.run_model.write_metadata"):
         result = model_pipeline.fn(
             input_path=INPUT_PATH,
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )
-    # lakefs://model-runs/main/<run-id>/output/  →  index 4
-    run_id = result.split("/")[4]
-    assert re.match(
-        r"^model-prediction-grippeweb-baseline-nullmodel-\d{8}-\d{6}$",
-        run_id,
-    )
+    # lakefs://model-runs/main/<qid>/output/  →  index 4
+    qid_in_path = result.split("/")[4]
+    assert re.match(r"^Q\d+$", qid_in_path)
+
+
+def test_k8s_job_name_format():
+    with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait") as mock_submit, patch("flow.run_model.write_metadata"):
+        model_pipeline.fn(
+            input_path=INPUT_PATH,
+            model_image=MODEL_IMAGE,
+            config_json=MODEL_CONFIG_JSON,
+        )
+    run_id = mock_submit.call_args.kwargs["run_id"]
+    assert re.match(r"^model-runner__Q\d+$", run_id)
     assert len(run_id) <= 63
 
 
@@ -128,7 +137,7 @@ def test_stage_input_raises_when_file_missing():
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to read input file from LakeFS"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_raises_when_data_upload_fails():
@@ -136,7 +145,7 @@ def test_stage_input_raises_when_data_upload_fails():
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage data.tsv"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_raises_when_config_upload_fails():
@@ -144,27 +153,27 @@ def test_stage_input_raises_when_config_upload_fails():
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage config.json"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_calls_get_and_upload():
     repo_factory, src_branch_mock, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
 
     src_branch_mock.object.assert_called_once_with("grippeweb/grippeweb-2026-W20.tsv")
     assert dst_obj.upload.call_count == 2
     paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
-    assert f"{RUN_ID}/input/data.tsv" in paths
-    assert f"{RUN_ID}/input/config.json" in paths
+    assert f"{QID}/input/data.tsv" in paths
+    assert f"{QID}/input/config.json" in paths
 
 
 def test_stage_input_config_uploaded_verbatim():
     repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, run_id=RUN_ID)
+        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
 
     config_idx = next(
         i for i, c in enumerate(dst_branch_mock.object.call_args_list)
@@ -182,7 +191,7 @@ def test_job_spec():
         patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     assert job.metadata.name == RUN_ID
@@ -204,7 +213,7 @@ def test_job_secret_refs():
         patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     # lakefs-pull carries the credentials for lakectl
@@ -231,7 +240,7 @@ def test_submit_polls_until_succeeded():
         patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
     # one pending poll → one succeeded poll → break
     assert batch_v1.read_namespaced_job.call_count == 2
@@ -258,7 +267,7 @@ def test_submit_raises_on_stuck_image():
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match="InvalidImageName"):
-            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
 
 def test_submit_raises_on_failure():
@@ -269,7 +278,7 @@ def test_submit_raises_on_failure():
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match=RUN_ID):
-            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG)
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
 
 # ── model_pipeline ────────────────────────────────────────────────────────────
