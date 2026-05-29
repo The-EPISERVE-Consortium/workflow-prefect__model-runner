@@ -16,7 +16,7 @@ from tools.sharding import shard_qid
 
 INPUT_PATH        = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
 QID               = "Q1748526042817"
-RUN_ID            = f"model-runner__{QID}"
+RUN_ID            = f"model-runner-{QID.lower()}"
 MODEL_CONFIG_JSON = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
 MODEL_IMAGE       = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
 MODEL_TAG         = "v0.1.0"
@@ -117,7 +117,7 @@ def test_k8s_job_name_format():
             config_json=MODEL_CONFIG_JSON,
         )
     run_id = mock_submit.call_args.kwargs["run_id"]
-    assert re.match(r"^model-runner__Q\d+$", run_id)
+    assert re.match(r"^model-runner-q\d+$", run_id)
     assert len(run_id) <= 63
 
 

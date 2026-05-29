@@ -298,7 +298,7 @@ def model_pipeline(
     model_tag = model_tag.strip()
     run_start = datetime.now(timezone.utc)
     qid = mint_qid()
-    run_id = f"model-runner__{qid}"
+    run_id = f"model-runner-{qid.lower()}"
 
     stage_input(input_path=input_path, config_json=config_json, qid=qid)
     status = "failed"
