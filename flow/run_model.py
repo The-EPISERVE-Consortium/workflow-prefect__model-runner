@@ -11,6 +11,7 @@ from kubernetes import client, config as k8s_config
 import lakefs
 from lakefs.client import Client
 from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
+from tools.sharding import shard_qid
 
 
 LAKEFS_DATA_REPO = "data-raw"
@@ -62,7 +63,7 @@ def stage_input(input_path: str, config_json: str, qid: str):
     logger = get_run_logger()
 
     src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
-    dst_prefix = f"{qid}/input"
+    dst_prefix = f"{shard_qid(qid)}/input"
     dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
     dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
 
@@ -114,9 +115,10 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
     branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
     file_entities = []
     has_part = []
-    prefixes = [f"{qid}/input/"]
+    sharded = shard_qid(qid)
+    prefixes = [f"{sharded}/input/"]
     if status == "success":
-        prefixes.append(f"{qid}/output/")
+        prefixes.append(f"{sharded}/output/")
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
         uri = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{obj.path}"
         http_url = lakefs_uri_to_http(uri)
@@ -156,7 +158,7 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
     }, indent=2).encode()
 
     branch_handle \
-        .object(f"{qid}/ro-crate-metadata.json") \
+        .object(f"{sharded}/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
 
@@ -176,7 +178,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
     batch_v1 = client.BatchV1Api()
     core_v1  = client.CoreV1Api()
 
-    lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{qid}"
+    lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}"
     lakefs_host = os.environ["LAKEFS_HOST"]
 
     lakefs_env = [
@@ -318,4 +320,4 @@ def model_pipeline(
             status=status,
         )
 
-    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{qid}/output/"
+    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/output/"
