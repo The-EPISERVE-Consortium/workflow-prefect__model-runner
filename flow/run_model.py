@@ -84,19 +84,35 @@ def stage_input(input_path: str, config_json: str, run_id: str):
 @task
 def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
+    model_name = model_image.split('/')[-1]
     metadata = json.dumps({
-        "model_name":       model_image.split('/')[-1],
-        "git_commit":       "",
-        "docker_tag":       model_tag,
-        "run_timestamp":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "status":           status,
-        "computation_time": computation_time,
+        "@context": "https://w3id.org/ro/crate/1.1/context",
+        "@graph": [
+            {
+                "@id": "ro-crate-metadata.json",
+                "@type": "CreativeWork",
+                "conformsTo": {"@id": "https://w3id.org/ro/crate/1.1"},
+                "about": {"@id": "./"},
+            },
+            {
+                "@id": "./",
+                "@type": "Dataset",
+                "name":             model_name,
+                "description":      f"Model run of {model_name} (tag: {model_tag})",
+                "datePublished":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "license":          "unknown",
+                "git_commit":       "",
+                "docker_tag":       model_tag,
+                "status":           status,
+                "computation_time": computation_time,
+            },
+        ],
     }, indent=2).encode()
 
     lc = _lakefs_client()
     lakefs.repository(LAKEFS_RUN_REPO, client=lc) \
         .branch(LAKEFS_BRANCH) \
-        .object(f"{run_id}/metadata.json") \
+        .object(f"{run_id}/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
 
