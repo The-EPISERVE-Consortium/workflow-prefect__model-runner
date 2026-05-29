@@ -1,8 +1,10 @@
 import json
+import mimetypes
 import os
 import re
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote
 from prefect import flow, task
 from prefect.logging import get_run_logger
 from kubernetes import client, config as k8s_config
@@ -14,6 +16,24 @@ from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 LAKEFS_DATA_REPO = "data-raw"
 LAKEFS_RUN_REPO  = "model-runs"
 LAKEFS_BRANCH    = "main"
+
+
+def lakefs_uri_to_http(uri: str) -> str:
+    """
+    Convert a lakefs:// URI to the lakeFS HTTP API object URL.
+
+    lakefs://model-runs/main/run-id/input/file.json
+    → https://<LAKEFS_HOST>/api/v1/repositories/model-runs/refs/main/objects
+      ?path=run-id%2Finput%2Ffile.json&presign=false
+    """
+    without_scheme = uri[len("lakefs://"):]
+    repo, branch, *parts = without_scheme.split("/")
+    path = "/".join(parts)
+    host = os.environ["LAKEFS_HOST"].rstrip("/")
+    return (
+        f"{host}/api/v1/repositories/{repo}/refs/{branch}/objects"
+        f"?path={quote(path, safe='')}&presign=false"
+    )
 
 
 def _lakefs_client() -> Client:
@@ -85,6 +105,24 @@ def stage_input(input_path: str, config_json: str, run_id: str):
 def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: datetime, status: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     model_name = model_image.split('/')[-1]
+
+    lc = _lakefs_client()
+    branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
+    file_entities = []
+    has_part = []
+    prefixes = [f"{run_id}/input/"]
+    if status == "success":
+        prefixes.append(f"{run_id}/output/")
+    for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
+        uri = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{obj.path}"
+        http_url = lakefs_uri_to_http(uri)
+        mime, _ = mimetypes.guess_type(obj.path)
+        entity = {"@id": http_url, "@type": "File", "name": obj.path.split("/")[-1]}
+        if mime:
+            entity["encodingFormat"] = mime
+        file_entities.append(entity)
+        has_part.append({"@id": http_url})
+
     metadata = json.dumps({
         "@context": "https://w3id.org/ro/crate/1.1/context",
         "@graph": [
@@ -105,13 +143,13 @@ def write_metadata(run_id: str, model_image: str, model_tag: str, run_start: dat
                 "docker_tag":       model_tag,
                 "status":           status,
                 "computation_time": computation_time,
+                "hasPart":          has_part,
             },
+            *file_entities,
         ],
     }, indent=2).encode()
 
-    lc = _lakefs_client()
-    lakefs.repository(LAKEFS_RUN_REPO, client=lc) \
-        .branch(LAKEFS_BRANCH) \
+    branch_handle \
         .object(f"{run_id}/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
