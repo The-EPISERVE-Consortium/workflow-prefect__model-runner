@@ -63,7 +63,7 @@ def stage_input(input_path: str, config_json: str, qid: str):
     logger = get_run_logger()
 
     src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
-    dst_prefix = f"{shard_qid(qid)}/input"
+    dst_prefix = f"{shard_qid(qid)}/components/input"
     dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
     dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
 
@@ -116,18 +116,17 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
     file_entities = []
     has_part = []
     sharded = shard_qid(qid)
-    prefixes = [f"{sharded}/input/"]
+    prefixes = [f"{sharded}/components/input/"]
     if status == "success":
-        prefixes.append(f"{sharded}/output/")
+        prefixes.append(f"{sharded}/components/output/")
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
-        uri = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{obj.path}"
-        http_url = lakefs_uri_to_http(uri)
+        rel_path = obj.path[len(f"{sharded}/"):]
         mime, _ = mimetypes.guess_type(obj.path)
-        entity = {"@id": http_url, "@type": "File", "name": obj.path.split("/")[-1]}
+        entity = {"@id": rel_path, "@type": "File", "name": obj.path.split("/")[-1]}
         if mime:
             entity["encodingFormat"] = mime
         file_entities.append(entity)
-        has_part.append({"@id": http_url})
+        has_part.append({"@id": rel_path})
 
     metadata = json.dumps({
         "@context": "https://w3id.org/ro/crate/1.1/context",
@@ -218,8 +217,8 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs download {lakefs_run_path}/input/data.tsv /work/input/data.tsv && "
-                                f"lakectl fs download {lakefs_run_path}/input/config.json /work/input/config.json"
+                                f"lakectl fs download {lakefs_run_path}/components/input/data.tsv /work/input/data.tsv && "
+                                f"lakectl fs download {lakefs_run_path}/components/input/config.json /work/input/config.json"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],
@@ -236,7 +235,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"lakectl fs upload --source /work/output -r {lakefs_run_path}/output/ && "
+                                f"lakectl fs upload --source /work/output -r {lakefs_run_path}/components/output/ && "
                                 f"lakectl commit lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH} -m 'model run {run_id}'"
                             ],
                             env=lakefs_env,
@@ -320,4 +319,4 @@ def model_pipeline(
             status=status,
         )
 
-    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/output/"
+    return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/components/output/"

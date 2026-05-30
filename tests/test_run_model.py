@@ -105,8 +105,8 @@ def test_return_path_uses_qid():
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )
-    # lakefs://model-runs/main/pp/qq/rr/Qxxxx/output/
-    assert re.search(r"/Q\d+/output/$", result)
+    # lakefs://model-runs/main/pp/qq/rr/Qxxxx/components/output/
+    assert re.search(r"/Q\d+/components/output/$", result)
 
 
 def test_k8s_job_name_format():
@@ -166,8 +166,8 @@ def test_stage_input_calls_get_and_upload():
     assert dst_obj.upload.call_count == 2
     sharded = shard_qid(QID)
     paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
-    assert f"{sharded}/input/data.tsv" in paths
-    assert f"{sharded}/input/config.json" in paths
+    assert f"{sharded}/components/input/data.tsv" in paths
+    assert f"{sharded}/components/input/config.json" in paths
 
 
 def test_stage_input_config_uploaded_verbatim():
@@ -297,6 +297,6 @@ def test_pipeline_return_path():
         )
 
     assert result.startswith(f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/")
-    assert result.endswith("/output/")
+    assert result.endswith("/components/output/")
     mock_stage.assert_called_once()
     mock_submit.assert_called_once()
