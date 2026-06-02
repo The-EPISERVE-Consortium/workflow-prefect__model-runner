@@ -3,7 +3,7 @@ import mimetypes
 import os
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from prefect import flow, task
 from prefect.logging import get_run_logger
@@ -109,12 +109,14 @@ def stage_input(input_path: str, config_json: str, qid: str):
 @task
 def write_metadata(qid: str, model_image: str, model_tag: str, run_start: datetime, status: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
+    end_time = run_start + timedelta(seconds=computation_time)
     model_name = model_image.split('/')[-1]
 
     lc = _lakefs_client()
     branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
     file_entities = []
-    has_part = []
+    input_refs = []
+    output_refs = []
     sharded = shard_qid(qid)
     prefixes = [f"{sharded}/components/input/"]
     if status == "success":
@@ -126,7 +128,17 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
         if mime:
             entity["encodingFormat"] = mime
         file_entities.append(entity)
-        has_part.append({"@id": rel_path})
+        if rel_path.startswith("components/input/"):
+            input_refs.append({"@id": rel_path})
+        else:
+            output_refs.append({"@id": rel_path})
+
+    action_status = (
+        "https://schema.org/CompletedActionStatus"
+        if status == "success"
+        else "https://schema.org/FailedActionStatus"
+    )
+    software_id = f"#{model_name}"
 
     metadata = json.dumps({
         "@context": "https://w3id.org/ro/crate/1.1/context",
@@ -134,23 +146,39 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
             {
                 "@id": "ro-crate-metadata.json",
                 "@type": "CreativeWork",
-                "conformsTo": {"@id": "https://w3id.org/ro/crate/1.1"},
+                "conformsTo": [
+                    {"@id": "https://w3id.org/ro/crate/1.1"},
+                    {"@id": "https://w3id.org/ro/wfrun/process/0.4"},
+                ],
                 "about": {"@id": "./"},
             },
             {
                 "@id": "./",
                 "@type": "Dataset",
-                "identifier":       qid,
-                "qid":              qid,
-                "name":             model_name,
-                "description":      f"Model run of {model_name} (tag: {model_tag})",
-                "datePublished":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "license":          "unknown",
-                "git_commit":       "",
-                "docker_tag":       model_tag,
-                "status":           status,
-                "computation_time": computation_time,
-                "hasPart":          has_part,
+                "identifier":    qid,
+                "name":          model_name,
+                "description":   f"Model run of {model_name} (tag: {model_tag})",
+                "datePublished": run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "license":       "unknown",
+                "hasPart":       [{"@id": e["@id"]} for e in file_entities],
+                "mentions":      [{"@id": "#run"}],
+            },
+            {
+                "@id": "#run",
+                "@type": "CreateAction",
+                "instrument":   {"@id": software_id},
+                "object":       input_refs,
+                "result":       output_refs,
+                "startTime":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "endTime":      end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "actionStatus": {"@id": action_status},
+            },
+            {
+                "@id": software_id,
+                "@type": "SoftwareApplication",
+                "name":            model_name,
+                "softwareVersion": model_tag,
+                "url":             model_image,
             },
             *file_entities,
         ],
