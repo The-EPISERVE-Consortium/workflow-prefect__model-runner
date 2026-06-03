@@ -138,6 +138,13 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
         .object(f"{sharded}/components/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
+    file_entities.append({
+        "@id": "components/ro-crate-metadata.json",
+        "@type": "File",
+        "name": "ro-crate-metadata.json",
+        "encodingFormat": "application/json",
+    })
+
     fdo = _build_fdo(
         qid=qid,
         model_image=model_image,

@@ -402,3 +402,8 @@ def test_write_metadata_uploads_fdo():
     sharded = shard_qid(QID)
     assert f"{sharded}/components/ro-crate-metadata.json" in uploaded_paths
     assert f"{sharded}/{QID}.fdo.json" in uploaded_paths
+
+    fdo_call = next(c for c in obj_mock.upload.call_args_list if b"fdo:hasComponent" in c.kwargs.get("data", b""))
+    fdo = _json.loads(fdo_call.kwargs["data"])
+    component_ids = {c["@id"] for c in fdo["kernel"]["fdo:hasComponent"]}
+    assert "components/ro-crate-metadata.json" in component_ids
