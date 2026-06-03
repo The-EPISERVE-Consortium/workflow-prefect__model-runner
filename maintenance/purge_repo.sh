@@ -21,10 +21,10 @@ BRANCH="main"
 
 echo "Purging all files from lakefs://${REPO}/${BRANCH}"
 
-if lakectl fs ls "lakefs://${REPO}/${BRANCH}/" --output json 2>/dev/null | jq -e 'length > 0' > /dev/null; then
-    lakectl fs rm -r "lakefs://${REPO}/${BRANCH}/"
-    lakectl commit "lakefs://${REPO}/${BRANCH}" -m "maintenance: purge all files"
-    echo "Done. lakefs://${REPO}/${BRANCH} is now empty."
-else
+if ! lakectl fs rm -r "lakefs://${REPO}/${BRANCH}/"; then
     echo "lakefs://${REPO}/${BRANCH} is already empty, nothing to do."
+    exit 0
 fi
+
+lakectl commit "lakefs://${REPO}/${BRANCH}" -m "maintenance: purge all files"
+echo "Done. lakefs://${REPO}/${BRANCH} is now empty."
