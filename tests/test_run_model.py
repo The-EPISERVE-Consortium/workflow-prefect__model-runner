@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,7 +8,9 @@ from flow.run_model import (
     mint_qid,
     stage_input,
     submit_and_wait,
+    write_metadata,
     model_pipeline,
+    _build_fdo,
     LAKEFS_DATA_REPO,
     LAKEFS_RUN_REPO,
     LAKEFS_BRANCH,
@@ -300,3 +303,103 @@ def test_pipeline_return_path():
     assert result.endswith("/components/output/")
     mock_stage.assert_called_once()
     mock_submit.assert_called_once()
+
+
+# ── _build_fdo ────────────────────────────────────────────────────────────────
+
+import json as _json
+from datetime import timezone
+
+_END_TIME = datetime(2026, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+_FILE_ENTITIES = [
+    {"@id": "components/input/data.tsv", "@type": "File", "name": "data.tsv", "encodingFormat": "text/tab-separated-values"},
+    {"@id": "components/input/config.json", "@type": "File", "name": "config.json", "encodingFormat": "application/json"},
+    {"@id": "components/output/forecast.csv", "@type": "File", "name": "forecast.csv", "encodingFormat": "text/csv"},
+    {"@id": "components/output/summary.json", "@type": "File", "name": "summary.json", "encodingFormat": "application/json"},
+]
+
+
+def test_fdo_top_level_structure():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    assert fdo["@id"] == QID
+    assert fdo["@type"] == "DigitalObject"
+    assert {"schema", "prov", "fdo"} <= {k for ctx in fdo["@context"] if isinstance(ctx, dict) for k in ctx}
+
+
+def test_fdo_kernel_fields():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    kernel = fdo["kernel"]
+    assert kernel["@id"] == QID
+    assert kernel["primaryIdentifier"] == QID
+    assert kernel["digitalObjectType"] == "https://schema.org/Dataset"
+    assert kernel["modified"] == "2026-06-03T12:00:00Z"
+
+
+def test_fdo_kernel_components_includes_input_and_output():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    components = fdo["kernel"]["fdo:hasComponent"]
+    assert len(components) == 4
+    ids = {c["@id"] for c in components}
+    assert "components/input/data.tsv" in ids
+    assert "components/input/config.json" in ids
+    assert "components/output/forecast.csv" in ids
+    assert "components/output/summary.json" in ids
+    tsv_comp = next(c for c in components if c["@id"] == "components/input/data.tsv")
+    assert tsv_comp["componentId"] == "data.tsv"
+    assert tsv_comp["mediaType"] == "text/tab-separated-values"
+
+
+def test_fdo_kernel_components_empty_when_no_files():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, []))
+    assert fdo["kernel"]["fdo:hasComponent"] == []
+
+
+def test_fdo_profile():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    profile = fdo["profile"]
+    assert profile["@type"] == "Dataset"
+    assert profile["@id"] == QID
+    assert profile["name"] == MODEL_IMAGE.split("/")[-1]
+    assert MODEL_TAG in profile["description"]
+    assert profile["url"] == MODEL_IMAGE
+
+
+def test_fdo_provenance():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    prov = fdo["provenance"]
+    assert prov["prov:generatedAtTime"] == "2026-06-03T12:00:00Z"
+    assert prov["prov:wasAttributedTo"] == f"{MODEL_IMAGE}:{MODEL_TAG}"
+
+
+def test_fdo_component_no_media_type_when_unknown():
+    entity = {"@id": "components/output/result.bin", "@type": "File", "name": "result.bin"}
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, [entity]))
+    comp = fdo["kernel"]["fdo:hasComponent"][0]
+    assert "mediaType" not in comp
+
+
+# ── write_metadata uploads fdo ────────────────────────────────────────────────
+
+def test_write_metadata_uploads_fdo():
+    branch_mock = MagicMock()
+    obj_mock = MagicMock()
+    branch_mock.object.return_value = obj_mock
+    branch_mock.objects.return_value = iter([])
+
+    with (
+        patch("flow.run_model._lakefs_client"),
+        patch("flow.run_model.lakefs.repository") as mock_repo,
+    ):
+        mock_repo.return_value.branch.return_value = branch_mock
+        write_metadata.fn(
+            qid=QID,
+            model_image=MODEL_IMAGE,
+            model_tag=MODEL_TAG,
+            run_start=_END_TIME,
+            status="success",
+        )
+
+    uploaded_paths = [call.args[0] for call in branch_mock.object.call_args_list]
+    sharded = shard_qid(QID)
+    assert f"{sharded}/{QID}.fdo.json" in uploaded_paths

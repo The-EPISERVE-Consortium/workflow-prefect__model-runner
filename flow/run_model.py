@@ -106,6 +106,53 @@ def stage_input(input_path: str, config_json: str, qid: str):
         raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
 
 
+def _build_fdo(qid: str, model_image: str, model_tag: str, end_time: datetime, file_entities: list) -> bytes:
+    model_name = model_image.split("/")[-1]
+    components = []
+    for entity in file_entities:
+        component = {
+            "@id": entity["@id"],
+            "componentId": entity["name"],
+        }
+        if "encodingFormat" in entity:
+            component["mediaType"] = entity["encodingFormat"]
+        components.append(component)
+
+    return json.dumps({
+        "@context": [
+            "https://w3id.org/fdo/context/v1",
+            {
+                "schema": "https://schema.org/",
+                "prov": "http://www.w3.org/ns/prov#",
+                "fdo": "https://w3id.org/fdo/vocabulary/",
+            },
+        ],
+        "@id": qid,
+        "@type": "DigitalObject",
+        "kernel": {
+            "@id": qid,
+            "digitalObjectType": "https://schema.org/Dataset",
+            "primaryIdentifier": qid,
+            "kernelVersion": "v1",
+            "immutable": False,
+            "modified": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "fdo:hasComponent": components,
+        },
+        "profile": {
+            "@context": "https://schema.org/",
+            "@type": "Dataset",
+            "@id": qid,
+            "name": model_name,
+            "description": f"Model run of {model_name} (tag: {model_tag})",
+            "url": model_image,
+        },
+        "provenance": {
+            "prov:generatedAtTime": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "prov:wasAttributedTo": f"{model_image}:{model_tag}",
+        },
+    }, indent=2).encode()
+
+
 @task
 def write_metadata(qid: str, model_image: str, model_tag: str, run_start: datetime, status: str):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
@@ -187,6 +234,18 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
     branch_handle \
         .object(f"{sharded}/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
+
+    fdo = _build_fdo(
+        qid=qid,
+        model_image=model_image,
+        model_tag=model_tag,
+        end_time=end_time,
+        file_entities=file_entities,
+    )
+    branch_handle \
+        .object(f"{sharded}/{qid}.fdo.json") \
+        .upload(data=fdo, content_type="application/json")
+
     branch_handle.commit(message=f"add ro-crate metadata for {qid}")
 
 
