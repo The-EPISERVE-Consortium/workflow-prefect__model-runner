@@ -400,4 +400,5 @@ def test_write_metadata_uploads_fdo():
 
     uploaded_paths = [call.args[0] for call in branch_mock.object.call_args_list]
     sharded = shard_qid(QID)
+    assert f"{sharded}/components/ro-crate-metadata.json" in uploaded_paths
     assert f"{sharded}/{QID}.fdo.json" in uploaded_paths

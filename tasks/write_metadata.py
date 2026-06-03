@@ -135,7 +135,7 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
     }, indent=2).encode()
 
     branch_handle \
-        .object(f"{sharded}/ro-crate-metadata.json") \
+        .object(f"{sharded}/components/ro-crate-metadata.json") \
         .upload(data=metadata, content_type="application/json")
 
     fdo = _build_fdo(
