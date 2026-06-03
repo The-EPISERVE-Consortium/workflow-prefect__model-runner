@@ -4,17 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from flow.run_model import (
-    mint_qid,
-    stage_input,
-    submit_and_wait,
-    write_metadata,
-    model_pipeline,
-    _build_fdo,
-    LAKEFS_DATA_REPO,
-    LAKEFS_RUN_REPO,
-    LAKEFS_BRANCH,
-)
+from flow.run_model import mint_qid, model_pipeline
+from tasks.stage_input import stage_input
+from tasks.submit_and_wait import submit_and_wait
+from tasks.write_metadata import write_metadata, _build_fdo
+from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
 
 INPUT_PATH        = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
@@ -28,7 +22,11 @@ FAKE_DATA         = b"week\tcases\n2026-W20\t42\n"
 
 @pytest.fixture(autouse=True)
 def mock_logger():
-    with patch("flow.run_model.get_run_logger", return_value=MagicMock()):
+    logger = MagicMock()
+    with (
+        patch("tasks.stage_input.get_run_logger", return_value=logger),
+        patch("tasks.submit_and_wait.get_run_logger", return_value=logger),
+    ):
         yield
 
 
@@ -70,8 +68,8 @@ def _lakefs_mocks(*, src_get_error=None, dst_upload_errors=None):
 
 def _stage_patches(repo_factory):
     return (
-        patch("flow.run_model._lakefs_client"),
-        patch("flow.run_model.lakefs.repository", side_effect=repo_factory),
+        patch("tasks.stage_input.lakefs_client"),
+        patch("tasks.stage_input.lakefs.repository", side_effect=repo_factory),
     )
 
 
@@ -191,8 +189,8 @@ def test_stage_input_config_uploaded_verbatim():
 def test_job_spec():
     batch_v1 = _k8s_batch_mock(succeeded=True)
     with (
-        patch("flow.run_model.k8s_config.load_incluster_config"),
-        patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
@@ -213,8 +211,8 @@ def test_job_spec():
 def test_job_secret_refs():
     batch_v1 = _k8s_batch_mock(succeeded=True)
     with (
-        patch("flow.run_model.k8s_config.load_incluster_config"),
-        patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
@@ -240,8 +238,8 @@ def test_job_secret_refs():
 def test_submit_polls_until_succeeded():
     batch_v1 = _k8s_batch_mock(succeeded=True)
     with (
-        patch("flow.run_model.k8s_config.load_incluster_config"),
-        patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
@@ -265,9 +263,9 @@ def test_submit_raises_on_stuck_image():
     ]
 
     with (
-        patch("flow.run_model.k8s_config.load_incluster_config"),
-        patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
-        patch("flow.run_model.client.CoreV1Api", return_value=core_v1),
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=core_v1),
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match="InvalidImageName"):
@@ -277,8 +275,8 @@ def test_submit_raises_on_stuck_image():
 def test_submit_raises_on_failure():
     batch_v1 = _k8s_batch_mock(succeeded=False)
     with (
-        patch("flow.run_model.k8s_config.load_incluster_config"),
-        patch("flow.run_model.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match=RUN_ID):
@@ -388,8 +386,8 @@ def test_write_metadata_uploads_fdo():
     branch_mock.objects.return_value = iter([])
 
     with (
-        patch("flow.run_model._lakefs_client"),
-        patch("flow.run_model.lakefs.repository") as mock_repo,
+        patch("tasks.write_metadata.lakefs_client"),
+        patch("tasks.write_metadata.lakefs.repository") as mock_repo,
     ):
         mock_repo.return_value.branch.return_value = branch_mock
         write_metadata.fn(
