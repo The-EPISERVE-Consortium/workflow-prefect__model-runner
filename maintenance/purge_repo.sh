@@ -19,6 +19,15 @@ fi
 REPO="$1"
 BRANCH="main"
 
+echo "This will permanently delete all files from lakefs://${REPO}/${BRANCH}."
+echo "The repository and branch will be preserved."
+echo ""
+read -r -p "Type YES to continue: " confirm
+if [ "$confirm" != "YES" ]; then
+    echo "Aborted."
+    exit 1
+fi
+
 echo "Purging all files from lakefs://${REPO}/${BRANCH}"
 
 if ! lakectl fs rm -r "lakefs://${REPO}/${BRANCH}/"; then
