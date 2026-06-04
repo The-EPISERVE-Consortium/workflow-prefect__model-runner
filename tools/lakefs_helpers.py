@@ -5,7 +5,7 @@ from lakefs.client import Client
 from urllib.parse import quote
 
 
-LAKEFS_DATA_REPO = "data-raw"
+LAKEFS_DATA_REPO = "data-processed"
 LAKEFS_RUN_REPO  = "model-runs"
 LAKEFS_BRANCH    = "main"
 

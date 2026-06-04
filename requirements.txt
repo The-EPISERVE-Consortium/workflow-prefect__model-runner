@@ -2,4 +2,6 @@ prefect>=3.0
 kubernetes
 lakefs
 pandas
+pyarrow
+duckdb
 pytest

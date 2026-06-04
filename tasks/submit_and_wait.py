@@ -66,8 +66,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs download {lakefs_run_path}/components/input/data.tsv /work/input/data.tsv && "
-                                f"lakectl fs download {lakefs_run_path}/components/input/config.json /work/input/config.json"
+                                f"lakectl fs download --recursive {lakefs_run_path}/components/input/ /work/input/"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],

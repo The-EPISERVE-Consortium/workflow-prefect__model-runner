@@ -11,13 +11,23 @@ from tasks.write_metadata import write_metadata, _build_fdo
 from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
 
-INPUT_PATH        = "lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv"
+INPUT_DATA_FILES = [
+    [
+        "lakefs://data-processed/main/05/22/57/Q0522578154235/components/SARI-Hospitalisierungsinzidenz.parquet",
+        "SARI-Hospitalisierungsinzidenz.parquet",
+    ],
+    [
+        "lakefs://data-processed/main/32/74/12/Q3274128860531/components/GrippeWeb_Daten_des_Wochenberichts.parquet",
+        "GrippeWeb_Daten_des_Wochenberichts.parquet",
+    ],
+]
+SINGLE_INPUT_FILE = [INPUT_DATA_FILES[0]]
 QID               = "Q1748526042817"
 RUN_ID            = f"model-runner-{QID.lower()}"
 MODEL_CONFIG_JSON = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
 MODEL_IMAGE       = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
 MODEL_TAG         = "v0.1.0"
-FAKE_DATA         = b"week\tcases\n2026-W20\t42\n"
+FAKE_DATA         = b"fake-parquet-bytes"
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +112,7 @@ def test_mint_qid_unique():
 def test_return_path_uses_qid():
     with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait"), patch("flow.run_model.write_metadata"):
         result = model_pipeline.fn(
-            input_path=INPUT_PATH,
+            input_data_files=INPUT_DATA_FILES,
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )
@@ -113,22 +123,13 @@ def test_return_path_uses_qid():
 def test_k8s_job_name_format():
     with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait") as mock_submit, patch("flow.run_model.write_metadata"):
         model_pipeline.fn(
-            input_path=INPUT_PATH,
+            input_data_files=INPUT_DATA_FILES,
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )
     run_id = mock_submit.call_args.kwargs["run_id"]
     assert re.match(r"^model-runner-q\d+$", run_id)
     assert len(run_id) <= 63
-
-
-# ── input path parsing ────────────────────────────────────────────────────────
-
-def test_input_path_parsing():
-    repo, branch, path = INPUT_PATH.replace("lakefs://", "").split("/", 2)
-    assert repo == "data-raw"
-    assert branch == "main"
-    assert path == "grippeweb/grippeweb-2026-W20.tsv"
 
 
 # ── stage_input ───────────────────────────────────────────────────────────────
@@ -138,44 +139,51 @@ def test_stage_input_raises_when_file_missing():
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to read input file from LakeFS"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
+            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_raises_when_data_upload_fails():
     repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=Exception("permission denied"))
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to stage data.tsv"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
+        with pytest.raises(RuntimeError, match="Failed to stage"):
+            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_raises_when_config_upload_fails():
+    # first call (data file) succeeds, second call (config.json) fails
     repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, Exception("permission denied")])
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage config.json"):
-            stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
+            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, qid=QID)
 
 
 def test_stage_input_calls_get_and_upload():
     repo_factory, src_branch_mock, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
+        stage_input.fn(input_data_files=INPUT_DATA_FILES, config_json=MODEL_CONFIG_JSON, qid=QID)
 
-    src_branch_mock.object.assert_called_once_with("grippeweb/grippeweb-2026-W20.tsv")
-    assert dst_obj.upload.call_count == 2
+    # src: one read per input file
+    src_paths_called = [c.args[0] for c in src_branch_mock.object.call_args_list]
+    assert "05/22/57/Q0522578154235/components/SARI-Hospitalisierungsinzidenz.parquet" in src_paths_called
+    assert "32/74/12/Q3274128860531/components/GrippeWeb_Daten_des_Wochenberichts.parquet" in src_paths_called
+
+    # dst: one upload per input file + config.json
+    assert dst_obj.upload.call_count == 3
     sharded = shard_qid(QID)
-    paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
-    assert f"{sharded}/components/input/data.tsv" in paths
-    assert f"{sharded}/components/input/config.json" in paths
+    dst_paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
+    assert f"{sharded}/components/input/SARI-Hospitalisierungsinzidenz.parquet" in dst_paths
+    assert f"{sharded}/components/input/GrippeWeb_Daten_des_Wochenberichts.parquet" in dst_paths
+    assert f"{sharded}/components/input/config.json" in dst_paths
 
 
 def test_stage_input_config_uploaded_verbatim():
     repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_path=INPUT_PATH, config_json=MODEL_CONFIG_JSON, qid=QID)
+        stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, qid=QID)
 
     config_idx = next(
         i for i, c in enumerate(dst_branch_mock.object.call_args_list)
@@ -292,7 +300,7 @@ def test_pipeline_return_path():
         patch("flow.run_model.write_metadata"),
     ):
         result = model_pipeline.fn(
-            input_path=INPUT_PATH,
+            input_data_files=INPUT_DATA_FILES,
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )

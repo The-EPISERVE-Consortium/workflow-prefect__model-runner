@@ -1,4 +1,8 @@
+import io
+
+import duckdb
 import lakefs
+import pandas as pd
 from prefect import task
 from prefect.logging import get_run_logger
 
@@ -6,56 +10,81 @@ from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
 
-@task
-def stage_input(input_path: str, config_json: str, qid: str):
-    """
-    Copy the input file from data-raw and write config.json into the run path.
+def _apply_sql(data_bytes: bytes, sql: str) -> bytes:
+    df = pd.read_parquet(io.BytesIO(data_bytes))
+    conn = duckdb.connect()
+    conn.register("df", df)
+    result = conn.execute(sql).df()
+    buf = io.BytesIO()
+    result.to_parquet(buf, index=False)
+    return buf.getvalue()
 
-    input_path:   e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
-    config_json: JSON string written verbatim as config.json
+
+@task
+def stage_input(
+    input_data_files: list[list[str]],
+    config_json: str,
+    qid: str,
+    data_transformation_sql: list[str] | None = None,
+):
+    """
+    Copy input files from data-processed and write config.json into the run path.
+
+    input_data_files: list of [lakefs_uri, target_filename] pairs
+    data_transformation_sql: optional per-file SQL filter applied before staging
     Writes to:
-      lakefs://model-runs/main/<qid>/input/data.tsv
-      lakefs://model-runs/main/<qid>/input/config.json
+      lakefs://model-runs/main/<sharded-qid>/components/input/<filename>
+      lakefs://model-runs/main/<sharded-qid>/components/input/config.json
     """
     logger = get_run_logger()
-
-    src_repo, src_branch, path = input_path.replace("lakefs://", "").split("/", 2)
-    dst_prefix = f"{shard_qid(qid)}/components/input"
-    dst_data   = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/data.tsv"
-    dst_config = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefix}/config.json"
-
     lc = lakefs_client()
-
-    logger.info(f"Downloading input: {input_path}")
-    try:
-        data = (
-            lakefs.repository(src_repo, client=lc)
-            .branch(src_branch)
-            .object(path)
-            .reader()
-            .read()
-        )
-        logger.info(f"Downloaded {len(data)} bytes from {input_path}")
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to read input file from LakeFS: {input_path} — "
-            f"make sure the file exists and credentials are correct."
-        ) from e
-
+    dst_prefix = f"{shard_qid(qid)}/components/input"
     dst_branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
+    sql_list = data_transformation_sql or []
 
-    logger.info(f"Staging data.tsv -> {dst_data}")
-    try:
-        dst_branch_handle.object(f"{dst_prefix}/data.tsv").upload(
-            data=data, content_type="application/octet-stream"
-        )
-        logger.info("data.tsv staged successfully")
-    except Exception as e:
-        raise RuntimeError(f"Failed to stage data.tsv to {dst_data}") from e
+    for i, (src_uri, filename) in enumerate(input_data_files):
+        src_repo, src_branch, path = src_uri.replace("lakefs://", "").split("/", 2)
+        sql = sql_list[i] if i < len(sql_list) else ""
 
-    logger.info(f"Staging config.json -> {dst_config}")
+        logger.info(f"Downloading input: {src_uri}")
+        try:
+            data = (
+                lakefs.repository(src_repo, client=lc)
+                .branch(src_branch)
+                .object(path)
+                .reader()
+                .read()
+            )
+            logger.info(f"Downloaded {len(data)} bytes from {src_uri}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to read input file from LakeFS: {src_uri} — "
+                f"make sure the file exists and credentials are correct."
+            ) from e
+
+        if sql:
+            logger.info(f"Applying SQL transformation to {filename}")
+            try:
+                data = _apply_sql(data, sql)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to apply SQL transformation to {filename}: {sql!r}"
+                ) from e
+
+        dst_path = f"{dst_prefix}/{filename}"
+        logger.info(f"Staging {filename} -> lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_path}")
+        try:
+            dst_branch_handle.object(dst_path).upload(
+                data=data, content_type="application/octet-stream"
+            )
+            logger.info(f"{filename} staged successfully")
+        except Exception as e:
+            raise RuntimeError(f"Failed to stage {filename} to {dst_path}") from e
+
+    dst_config = f"{dst_prefix}/config.json"
+    logger.info(f"Staging config.json -> lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_config}")
     try:
-        dst_branch_handle.object(f"{dst_prefix}/config.json").upload(
+        dst_branch_handle.object(dst_config).upload(
             data=config_json.encode(), content_type="application/json"
         )
         logger.info("config.json staged successfully")

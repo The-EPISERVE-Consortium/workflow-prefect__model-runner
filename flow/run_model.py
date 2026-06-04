@@ -17,25 +17,28 @@ def mint_qid() -> str:
 
 @flow
 def model_pipeline(
-    input_path: str,
+    input_data_files: list[list[str]],
     model_image: str,
     config_json: str,
     model_tag: str = "latest",
     namespace: str = "default",
+    data_transformation_sql: list[str] | None = None,
 ):
     """
     Run a model container on Kubernetes, reading input from LakeFS and
     writing output back to LakeFS.
 
     Args:
-        input_path:   LakeFS path to the input TSV,
-                      e.g. lakefs://data-raw/main/grippeweb/grippeweb-2026-W20.tsv
+        input_data_files: List of [lakefs_uri, target_filename] pairs,
+                          e.g. [["lakefs://data-processed/main/.../file.parquet", "file.parquet"]]
         model_image:  GHCR image name,
                       e.g. ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel
-        config_json: JSON string written verbatim as config.json in the input directory,
+        config_json:  JSON string written verbatim as config.json in the input directory,
                       e.g. {"horizon_weeks": 4, "n_reference_weeks": 4}
         model_tag:    Image tag
         namespace:    Kubernetes namespace
+        data_transformation_sql: Optional per-file SQL filter applied before staging,
+                                 parallel list to input_data_files
     """
     model_image = model_image.strip()
     model_tag = model_tag.strip()
@@ -43,7 +46,12 @@ def model_pipeline(
     qid = mint_qid()
     run_id = f"model-runner-{qid.lower()}"
 
-    stage_input(input_path=input_path, config_json=config_json, qid=qid)
+    stage_input(
+        input_data_files=input_data_files,
+        config_json=config_json,
+        qid=qid,
+        data_transformation_sql=data_transformation_sql,
+    )
     status = "failed"
     try:
         submit_and_wait(
