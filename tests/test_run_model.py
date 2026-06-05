@@ -377,7 +377,8 @@ def test_pipeline_return_path():
 import json as _json
 from datetime import timezone
 
-_END_TIME = datetime(2026, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
+_START_TIME = datetime(2026, 6, 3, 11, 0, 0, tzinfo=timezone.utc)
+_END_TIME   = datetime(2026, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
 
 _FILE_ENTITIES = [
     {"@id": "components/input/data.tsv", "@type": "File", "name": "data.tsv", "encodingFormat": "text/tab-separated-values"},
@@ -394,14 +395,14 @@ _SQL = ["SELECT * FROM df WHERE saison = '26'", ""]
 
 
 def test_fdo_top_level_structure():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
     assert fdo["@id"] == QID
     assert fdo["@type"] == "DigitalObject"
     assert {"schema", "prov", "fdo"} <= {k for ctx in fdo["@context"] if isinstance(ctx, dict) for k in ctx}
 
 
 def test_fdo_kernel_fields():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
     kernel = fdo["kernel"]
     assert kernel["@id"] == QID
     assert kernel["primaryIdentifier"] == QID
@@ -410,7 +411,7 @@ def test_fdo_kernel_fields():
 
 
 def test_fdo_kernel_components_includes_input_and_output():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
     components = fdo["kernel"]["fdo:hasComponent"]
     assert len(components) == 4
     ids = {c["@id"] for c in components}
@@ -424,12 +425,12 @@ def test_fdo_kernel_components_includes_input_and_output():
 
 
 def test_fdo_kernel_components_empty_when_no_files():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, []))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, []))
     assert fdo["kernel"]["fdo:hasComponent"] == []
 
 
 def test_fdo_profile():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
     profile = fdo["profile"]
     assert profile["@type"] == "Dataset"
     assert profile["@id"] == QID
@@ -438,39 +439,52 @@ def test_fdo_profile():
     assert profile["url"] == MODEL_IMAGE
 
 
-def test_fdo_provenance():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
+def test_fdo_provenance_is_activity():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
+    assert fdo["prov:wasGeneratedBy"] == {"@id": "#run"}
     prov = fdo["provenance"]
-    assert prov["prov:generatedAtTime"] == "2026-06-03T12:00:00Z"
-    assert prov["prov:wasAttributedTo"] == f"{MODEL_IMAGE}:{MODEL_TAG}"
+    assert prov["@id"] == "#run"
+    assert prov["@type"] == "prov:Activity"
+    assert prov["prov:startedAtTime"] == "2026-06-03T11:00:00Z"
+    assert prov["prov:endedAtTime"] == "2026-06-03T12:00:00Z"
     assert prov["prov:used"] == []
 
 
+def test_fdo_provenance_software_agent():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES))
+    agent = fdo["provenance"]["prov:wasAssociatedWith"]
+    assert agent["@type"] == "prov:SoftwareAgent"
+    assert agent["@id"] == f"{MODEL_IMAGE}:{MODEL_TAG}"
+    assert agent["schema:softwareVersion"] == MODEL_TAG
+    assert agent["schema:url"] == MODEL_IMAGE
+
+
 def test_fdo_prov_used_source_uris():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
     used = fdo["provenance"]["prov:used"]
     assert len(used) == 2
     assert used[0]["@id"] == _INPUT_DATA_FILES[0][0]
+    assert used[0]["@type"] == "prov:Entity"
     assert used[1]["@id"] == _INPUT_DATA_FILES[1][0]
 
 
 def test_fdo_prov_used_includes_sql_when_present():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES,
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
                                   input_data_files=_INPUT_DATA_FILES, data_transformation_sql=_SQL))
     used = fdo["provenance"]["prov:used"]
-    assert used[0]["query"] == _SQL[0]
-    assert "query" not in used[1]
+    assert used[0]["schema:query"] == _SQL[0]
+    assert "schema:query" not in used[1]
 
 
 def test_fdo_prov_used_no_sql_when_not_provided():
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
     used = fdo["provenance"]["prov:used"]
-    assert all("query" not in entry for entry in used)
+    assert all("schema:query" not in entry for entry in used)
 
 
 def test_fdo_component_no_media_type_when_unknown():
     entity = {"@id": "components/output/result.bin", "@type": "File", "name": "result.bin"}
-    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, [entity]))
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, [entity]))
     comp = fdo["kernel"]["fdo:hasComponent"][0]
     assert "mediaType" not in comp
 

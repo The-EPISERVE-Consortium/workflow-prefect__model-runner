@@ -13,6 +13,7 @@ def _build_fdo(
     qid: str,
     model_image: str,
     model_tag: str,
+    run_start: datetime,
     end_time: datetime,
     file_entities: list,
     input_data_files: list[list[str]] | None = None,
@@ -32,9 +33,9 @@ def _build_fdo(
     sql_list = data_transformation_sql or []
     prov_used = []
     for i, (src_uri, _) in enumerate(input_data_files or []):
-        entry = {"@id": src_uri}
+        entry = {"@id": src_uri, "@type": "prov:Entity"}
         if i < len(sql_list) and sql_list[i]:
-            entry["query"] = sql_list[i]
+            entry["schema:query"] = sql_list[i]
         prov_used.append(entry)
 
     return json.dumps({
@@ -48,6 +49,7 @@ def _build_fdo(
         ],
         "@id": qid,
         "@type": "DigitalObject",
+        "prov:wasGeneratedBy": {"@id": "#run"},
         "kernel": {
             "@id": qid,
             "digitalObjectType": "https://schema.org/Dataset",
@@ -66,8 +68,17 @@ def _build_fdo(
             "url": model_image,
         },
         "provenance": {
-            "prov:generatedAtTime": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "prov:wasAttributedTo": f"{model_image}:{model_tag}",
+            "@id": "#run",
+            "@type": "prov:Activity",
+            "prov:startedAtTime": run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "prov:endedAtTime": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "prov:wasAssociatedWith": {
+                "@id": f"{model_image}:{model_tag}",
+                "@type": "prov:SoftwareAgent",
+                "schema:name": model_name,
+                "schema:softwareVersion": model_tag,
+                "schema:url": model_image,
+            },
             "prov:used": prov_used,
         },
     }, indent=2).encode()
@@ -174,6 +185,7 @@ def write_metadata(
         qid=qid,
         model_image=model_image,
         model_tag=model_tag,
+        run_start=run_start,
         end_time=end_time,
         file_entities=file_entities,
         input_data_files=input_data_files,
