@@ -24,6 +24,7 @@ def _apply_sql(data_bytes: bytes, sql: str) -> bytes:
 def stage_input(
     input_data_files: list[list[str]],
     config_json: str,
+    prefect_payload_json: str,
     qid: str,
     data_transformation_sql: list[str] | None = None,
 ):
@@ -90,3 +91,13 @@ def stage_input(
         logger.info("config.json staged successfully")
     except Exception as e:
         raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
+
+    dst_prefect = f"{dst_prefix}/config_prefect.json"
+    logger.info(f"Staging config_prefect.json -> lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefect}")
+    try:
+        dst_branch_handle.object(dst_prefect).upload(
+            data=prefect_payload_json.encode(), content_type="application/json"
+        )
+        logger.info("config_prefect.json staged successfully")
+    except Exception as e:
+        raise RuntimeError(f"Failed to stage config_prefect.json to {dst_prefect}") from e

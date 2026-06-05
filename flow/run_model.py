@@ -1,8 +1,10 @@
+import json
 import random
 import time
 from datetime import datetime, timezone
 
 from prefect import flow
+from prefect.runtime import flow_run
 
 from tasks.stage_input import stage_input
 from tasks.submit_and_wait import submit_and_wait
@@ -46,9 +48,12 @@ def model_pipeline(
     qid = mint_qid()
     run_id = f"model-runner-{qid.lower()}"
 
+    prefect_payload_json = json.dumps(flow_run.parameters)
+
     stage_input(
         input_data_files=input_data_files,
         config_json=config_json,
+        prefect_payload_json=prefect_payload_json,
         qid=qid,
         data_transformation_sql=data_transformation_sql,
     )
