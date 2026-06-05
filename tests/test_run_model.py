@@ -349,6 +349,12 @@ _FILE_ENTITIES = [
     {"@id": "components/output/summary.json", "@type": "File", "name": "summary.json", "encodingFormat": "application/json"},
 ]
 
+_INPUT_DATA_FILES = [
+    ["lakefs://data-processed/main/aa/bb/cc/Q1111111111111/components/input.parquet", "input.parquet"],
+    ["lakefs://data-processed/main/dd/ee/ff/Q2222222222222/components/extra.parquet", "extra.parquet"],
+]
+_SQL = ["SELECT * FROM df WHERE saison = '26'", ""]
+
 
 def test_fdo_top_level_structure():
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES))
@@ -400,6 +406,29 @@ def test_fdo_provenance():
     prov = fdo["provenance"]
     assert prov["prov:generatedAtTime"] == "2026-06-03T12:00:00Z"
     assert prov["prov:wasAttributedTo"] == f"{MODEL_IMAGE}:{MODEL_TAG}"
+    assert prov["prov:used"] == []
+
+
+def test_fdo_prov_used_source_uris():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
+    used = fdo["provenance"]["prov:used"]
+    assert len(used) == 2
+    assert used[0]["@id"] == _INPUT_DATA_FILES[0][0]
+    assert used[1]["@id"] == _INPUT_DATA_FILES[1][0]
+
+
+def test_fdo_prov_used_includes_sql_when_present():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES,
+                                  input_data_files=_INPUT_DATA_FILES, data_transformation_sql=_SQL))
+    used = fdo["provenance"]["prov:used"]
+    assert used[0]["query"] == _SQL[0]
+    assert "query" not in used[1]
+
+
+def test_fdo_prov_used_no_sql_when_not_provided():
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
+    used = fdo["provenance"]["prov:used"]
+    assert all("query" not in entry for entry in used)
 
 
 def test_fdo_component_no_media_type_when_unknown():
@@ -428,6 +457,7 @@ def test_write_metadata_uploads_fdo():
             model_tag=MODEL_TAG,
             run_start=_END_TIME,
             status="success",
+            input_data_files=_INPUT_DATA_FILES,
         )
 
     uploaded_paths = [call.args[0] for call in branch_mock.object.call_args_list]

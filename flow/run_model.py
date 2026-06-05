@@ -74,6 +74,8 @@ def model_pipeline(
             model_tag=model_tag,
             run_start=run_start,
             status=status,
+            input_data_files=input_data_files,
+            data_transformation_sql=data_transformation_sql,
         )
 
     return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/components/output/"

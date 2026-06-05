@@ -9,7 +9,15 @@ from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
 
-def _build_fdo(qid: str, model_image: str, model_tag: str, end_time: datetime, file_entities: list) -> bytes:
+def _build_fdo(
+    qid: str,
+    model_image: str,
+    model_tag: str,
+    end_time: datetime,
+    file_entities: list,
+    input_data_files: list[list[str]] | None = None,
+    data_transformation_sql: list[str] | None = None,
+) -> bytes:
     model_name = model_image.split("/")[-1]
     components = []
     for entity in file_entities:
@@ -20,6 +28,14 @@ def _build_fdo(qid: str, model_image: str, model_tag: str, end_time: datetime, f
         if "encodingFormat" in entity:
             component["mediaType"] = entity["encodingFormat"]
         components.append(component)
+
+    sql_list = data_transformation_sql or []
+    prov_used = []
+    for i, (src_uri, _) in enumerate(input_data_files or []):
+        entry = {"@id": src_uri}
+        if i < len(sql_list) and sql_list[i]:
+            entry["query"] = sql_list[i]
+        prov_used.append(entry)
 
     return json.dumps({
         "@context": [
@@ -52,12 +68,21 @@ def _build_fdo(qid: str, model_image: str, model_tag: str, end_time: datetime, f
         "provenance": {
             "prov:generatedAtTime": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "prov:wasAttributedTo": f"{model_image}:{model_tag}",
+            "prov:used": prov_used,
         },
     }, indent=2).encode()
 
 
 @task
-def write_metadata(qid: str, model_image: str, model_tag: str, run_start: datetime, status: str):
+def write_metadata(
+    qid: str,
+    model_image: str,
+    model_tag: str,
+    run_start: datetime,
+    status: str,
+    input_data_files: list[list[str]],
+    data_transformation_sql: list[str] | None = None,
+):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     end_time = run_start + timedelta(seconds=computation_time)
     model_name = model_image.split('/')[-1]
@@ -151,6 +176,8 @@ def write_metadata(qid: str, model_image: str, model_tag: str, run_start: dateti
         model_tag=model_tag,
         end_time=end_time,
         file_entities=file_entities,
+        input_data_files=input_data_files,
+        data_transformation_sql=data_transformation_sql,
     )
     branch_handle \
         .object(f"{sharded}/{qid}.fdo.json") \
