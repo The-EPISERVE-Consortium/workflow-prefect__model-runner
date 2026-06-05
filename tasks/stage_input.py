@@ -3,6 +3,7 @@ import io
 import duckdb
 import lakefs
 import pandas as pd
+import requests
 from prefect import task
 from prefect.logging import get_run_logger
 
@@ -44,22 +45,27 @@ def stage_input(
     sql_list = data_transformation_sql or []
 
     for i, (src_uri, filename) in enumerate(input_data_files):
-        src_repo, src_branch, path = src_uri.replace("lakefs://", "").split("/", 2)
         sql = sql_list[i] if i < len(sql_list) else ""
 
         logger.info(f"Downloading input: {src_uri}")
         try:
-            data = (
-                lakefs.repository(src_repo, client=lc)
-                .branch(src_branch)
-                .object(path)
-                .reader()
-                .read()
-            )
+            if src_uri.startswith("lakefs://"):
+                src_repo, src_branch, path = src_uri[len("lakefs://"):].split("/", 2)
+                data = (
+                    lakefs.repository(src_repo, client=lc)
+                    .branch(src_branch)
+                    .object(path)
+                    .reader()
+                    .read()
+                )
+            else:
+                resp = requests.get(src_uri, timeout=120)
+                resp.raise_for_status()
+                data = resp.content
             logger.info(f"Downloaded {len(data)} bytes from {src_uri}")
         except Exception as e:
             raise RuntimeError(
-                f"Failed to read input file from LakeFS: {src_uri} — "
+                f"Failed to read input file: {src_uri} — "
                 f"make sure the file exists and credentials are correct."
             ) from e
 

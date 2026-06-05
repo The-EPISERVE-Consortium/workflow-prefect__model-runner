@@ -135,11 +135,48 @@ def test_k8s_job_name_format():
 
 # ── stage_input ───────────────────────────────────────────────────────────────
 
+HTTP_INPUT_FILE = [["https://example.com/data/input.parquet", "input.parquet"]]
+
+
+def test_stage_input_downloads_http_uri():
+    dst_obj = MagicMock()
+    dst_branch_mock = MagicMock()
+    dst_branch_mock.object.return_value = dst_obj
+    dst_repo_mock = MagicMock()
+    dst_repo_mock.branch.return_value = dst_branch_mock
+
+    with (
+        patch("tasks.stage_input.lakefs_client"),
+        patch("tasks.stage_input.lakefs.repository", return_value=dst_repo_mock),
+        patch("tasks.stage_input.requests.get") as mock_get,
+    ):
+        mock_get.return_value = MagicMock(content=FAKE_DATA, raise_for_status=MagicMock())
+        stage_input.fn(input_data_files=HTTP_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
+
+    mock_get.assert_called_once_with("https://example.com/data/input.parquet", timeout=120)
+    sharded = shard_qid(QID)
+    dst_paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
+    assert f"{sharded}/components/input/input.parquet" in dst_paths
+
+
+def test_stage_input_raises_when_http_download_fails():
+    dst_repo_mock = MagicMock()
+    dst_repo_mock.branch.return_value = MagicMock()
+
+    with (
+        patch("tasks.stage_input.lakefs_client"),
+        patch("tasks.stage_input.lakefs.repository", return_value=dst_repo_mock),
+        patch("tasks.stage_input.requests.get", side_effect=Exception("connection refused")),
+    ):
+        with pytest.raises(RuntimeError, match="Failed to read input file"):
+            stage_input.fn(input_data_files=HTTP_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
+
+
 def test_stage_input_raises_when_file_missing():
     repo_factory, _, _, _ = _lakefs_mocks(src_get_error=Exception("404 Not Found"))
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to read input file from LakeFS"):
+        with pytest.raises(RuntimeError, match="Failed to read input file"):
             stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
 
 
