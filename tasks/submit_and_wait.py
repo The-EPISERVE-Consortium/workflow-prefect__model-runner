@@ -112,8 +112,12 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
             break
         if status.failed:
             pod_logs = _collect_pod_logs(core_v1, run_id, namespace)
-            raise RuntimeError(
-                f"Job {run_id} failed\n\nPod logs:\n{pod_logs}"
+            logger.error("Pod logs:\n%s", pod_logs)
+            model_error = next(
+                (line for line in pod_logs.splitlines() if line.startswith("ERROR:")),
+                None,
             )
+            detail = f": {model_error}" if model_error else ""
+            raise RuntimeError(f"Job {run_id} failed{detail}")
         _check_for_stuck_pods(core_v1, run_id, namespace)
         time.sleep(5)

@@ -43,6 +43,8 @@ def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) ->
                     name=pod_name, namespace=namespace,
                     container=container, tail_lines=50,
                 )
+                if isinstance(log, bytes):
+                    log = log.decode("utf-8", errors="replace")
                 lines.append(f"--- {container} ---\n{log}")
             except Exception as e:
                 lines.append(f"--- {container} --- (could not retrieve: {e})")
