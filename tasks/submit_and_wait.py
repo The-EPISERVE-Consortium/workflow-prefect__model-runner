@@ -5,8 +5,9 @@ from kubernetes import client, config as k8s_config
 from prefect import task
 from prefect.logging import get_run_logger
 
+import lakefs
 from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
-from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH
+from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
 
@@ -105,19 +106,36 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
     batch_v1.create_namespaced_job(namespace=namespace, body=job)
     logger.info("Job submitted, waiting for completion...")
 
+    failed = False
     while True:
         status = batch_v1.read_namespaced_job(name=run_id, namespace=namespace).status
         if status.succeeded:
             logger.info(f"Job {run_id} completed successfully")
             break
         if status.failed:
-            pod_logs = _collect_pod_logs(core_v1, run_id, namespace)
-            logger.error("Pod logs:\n%s", pod_logs)
-            model_error = next(
-                (line for line in pod_logs.splitlines() if line.startswith("ERROR:")),
-                None,
-            )
-            detail = f": {model_error}" if model_error else ""
-            raise RuntimeError(f"Job {run_id} failed{detail}")
+            failed = True
+            break
         _check_for_stuck_pods(core_v1, run_id, namespace)
         time.sleep(5)
+
+    pod_logs = _collect_pod_logs(core_v1, run_id, namespace)
+
+    log_path = f"{shard_qid(qid)}/components/output/run.log"
+    try:
+        lc = lakefs_client()
+        lakefs.repository(LAKEFS_RUN_REPO, client=lc) \
+            .branch(LAKEFS_BRANCH) \
+            .object(log_path) \
+            .upload(data=pod_logs.encode(), content_type="text/plain")
+        logger.info(f"Pod logs saved to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{log_path}")
+    except Exception as e:
+        logger.warning(f"Could not save pod logs to LakeFS: {e}")
+
+    if failed:
+        logger.error("Pod logs:\n%s", pod_logs)
+        model_error = next(
+            (line for line in pod_logs.splitlines() if line.startswith("ERROR:")),
+            None,
+        )
+        detail = f": {model_error}" if model_error else ""
+        raise RuntimeError(f"Job {run_id} failed{detail}")
