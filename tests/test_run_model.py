@@ -372,6 +372,23 @@ def test_pipeline_return_path():
     mock_submit.assert_called_once()
 
 
+def test_pipeline_empty_model_tag_defaults_to_latest():
+    with (
+        patch("flow.run_model.stage_input"),
+        patch("flow.run_model.submit_and_wait") as mock_submit,
+        patch("flow.run_model.write_metadata"),
+    ):
+        model_pipeline.fn(
+            input_data_files=INPUT_DATA_FILES,
+            model_image=MODEL_IMAGE,
+            model_tag="",
+            config_json=MODEL_CONFIG_JSON,
+        )
+
+    _, kwargs = mock_submit.call_args
+    assert kwargs["model_tag"] == "latest"
+
+
 # ── _build_fdo ────────────────────────────────────────────────────────────────
 
 import json as _json

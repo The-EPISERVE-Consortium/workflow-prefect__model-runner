@@ -43,7 +43,7 @@ def model_pipeline(
                                  parallel list to input_data_files
     """
     model_image = model_image.strip()
-    model_tag = model_tag.strip()
+    model_tag = model_tag.strip() or "latest"
     run_start = datetime.now(timezone.utc)
     qid = mint_qid()
     run_id = f"model-runner-{qid.lower()}"
