@@ -1,7 +1,23 @@
+import ast
+
 from kubernetes import client
 
 
 _BAD_WAITING_REASONS = {"InvalidImageName", "ImagePullBackOff", "ErrImagePull"}
+
+
+def _decode_log(raw) -> str:
+    """Decode a pod log that may be bytes, a decoded str, or a str(bytes) repr."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    s = raw if isinstance(raw, str) else str(raw)
+    # kubernetes client sometimes returns str(bytes_obj), e.g. "b'line1\nline2'"
+    if len(s) > 1 and s[0] == "b" and s[1] in ("'", '"'):
+        try:
+            return ast.literal_eval(s).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+    return s
 
 
 def _check_for_stuck_pods(core_v1: client.CoreV1Api, run_id: str, namespace: str) -> None:
@@ -39,15 +55,14 @@ def _collect_pod_logs(core_v1: client.CoreV1Api, run_id: str, namespace: str) ->
         lines = []
         for container in ["lakefs-pull", "model", "lakefs-push"]:
             try:
-                log = core_v1.read_namespaced_pod_log(
+                raw = core_v1.read_namespaced_pod_log(
                     name=pod_name, namespace=namespace,
-                    container=container, tail_lines=50,
+                    container=container, tail_lines=200,
                 )
-                if isinstance(log, bytes):
-                    log = log.decode("utf-8", errors="replace")
-                lines.append(f"--- {container} ---\n{log}")
+                log = _decode_log(raw).strip()
             except Exception as e:
-                lines.append(f"--- {container} --- (could not retrieve: {e})")
-        return "\n".join(lines)
+                log = f"(could not retrieve: {e})"
+            lines.append(f"{'=' * 40}\n  {container}\n{'=' * 40}\n{log}")
+        return "\n\n".join(lines)
     except Exception as e:
         return f"(could not collect pod logs: {e})"
