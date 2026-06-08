@@ -7,7 +7,7 @@ import pytest
 from flow.run_model import mint_qid, model_pipeline
 from tasks.stage_input import stage_input
 from tasks.submit_and_wait import submit_and_wait
-from tasks.write_metadata import write_metadata, _build_fdo
+from tasks.write_metadata import write_metadata, _build_fdo, mint_model_qid
 from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
 
@@ -520,3 +520,50 @@ def test_write_metadata_uploads_fdo():
     fdo = _json.loads(fdo_call.kwargs["data"])
     component_ids = {c["@id"] for c in fdo["kernel"]["fdo:hasComponent"]}
     assert "components/ro-crate-metadata.json" in component_ids
+
+
+def test_write_metadata_rocrate_uses_model_qid():
+    """ro-crate CreateAction.instrument must reference the stable model QID."""
+    branch_mock = MagicMock()
+    obj_mock = MagicMock()
+    branch_mock.object.return_value = obj_mock
+    branch_mock.objects.return_value = iter([])
+
+    with (
+        patch("tasks.write_metadata.lakefs_client"),
+        patch("tasks.write_metadata.lakefs.repository") as mock_repo,
+    ):
+        mock_repo.return_value.branch.return_value = branch_mock
+        write_metadata.fn(
+            qid=QID,
+            model_image=MODEL_IMAGE,
+            model_tag=MODEL_TAG,
+            run_start=_END_TIME,
+            status="success",
+            input_data_files=_INPUT_DATA_FILES,
+        )
+
+    expected_model_qid = mint_model_qid(MODEL_IMAGE)
+
+    rocrate_call = next(
+        c for c in obj_mock.upload.call_args_list
+        if b"ro/crate" in c.kwargs.get("data", b"")
+    )
+    rocrate = _json.loads(rocrate_call.kwargs["data"])
+    graph = {node["@id"]: node for node in rocrate["@graph"]}
+
+    run_node = graph["#run"]
+    assert run_node["instrument"] == {"@id": expected_model_qid}
+
+    software_node = graph[expected_model_qid]
+    assert software_node["@type"] == "SoftwareApplication"
+    assert software_node["identifier"] == expected_model_qid
+
+
+def test_mint_model_qid_deterministic():
+    assert mint_model_qid(MODEL_IMAGE) == mint_model_qid(MODEL_IMAGE)
+
+
+def test_mint_model_qid_format():
+    qid = mint_model_qid(MODEL_IMAGE)
+    assert re.match(r"^Q\d{13}$", qid)

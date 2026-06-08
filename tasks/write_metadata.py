@@ -1,3 +1,4 @@
+import hashlib
 import json
 import mimetypes
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,12 @@ from prefect import task
 
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
+
+
+def mint_model_qid(docker_image: str) -> str:
+    """Return a stable QID derived from the docker image URI (tag excluded)."""
+    digest = hashlib.sha256(docker_image.encode()).hexdigest()
+    return f"Q{int(digest, 16) % 10**13:013d}"
 
 
 def _build_fdo(
@@ -96,7 +103,8 @@ def write_metadata(
 ):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     end_time = run_start + timedelta(seconds=computation_time)
-    model_name = model_image.split('/')[-1]
+    model_name  = model_image.split('/')[-1]
+    model_qid   = mint_model_qid(model_image)
 
     lc = lakefs_client()
     branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
@@ -124,7 +132,6 @@ def write_metadata(
         if status == "success"
         else "https://schema.org/FailedActionStatus"
     )
-    software_id = f"#{model_name}"
 
     metadata = json.dumps({
         "@context": "https://w3id.org/ro/crate/1.1/context",
@@ -152,7 +159,7 @@ def write_metadata(
             {
                 "@id": "#run",
                 "@type": "CreateAction",
-                "instrument":   {"@id": software_id},
+                "instrument":   {"@id": model_qid},
                 "object":       input_refs,
                 "result":       output_refs,
                 "startTime":    run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -160,8 +167,9 @@ def write_metadata(
                 "actionStatus": {"@id": action_status},
             },
             {
-                "@id": software_id,
+                "@id": model_qid,
                 "@type": "SoftwareApplication",
+                "identifier":      model_qid,
                 "name":            model_name,
                 "softwareVersion": model_tag,
                 "url":             model_image,
