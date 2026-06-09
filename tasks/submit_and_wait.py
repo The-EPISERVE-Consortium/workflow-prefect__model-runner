@@ -11,7 +11,7 @@ from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
-LAKECTL_PYTHON_IMAGE = "ghcr.io/the-episerve-consortium/lakectl-python:latest"
+LAKECTL_PYTHON_IMAGE = "ghcr.io/the-episerve-consortium/lakectl-python:main"
 
 
 @task
