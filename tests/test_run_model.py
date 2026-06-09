@@ -644,6 +644,38 @@ def test_write_metadata_rocrate_uses_model_qid():
 
 
 
+def test_write_metadata_log_file_gets_text_plain():
+    """run.log must be stored with text/plain so browsers display it inline."""
+    branch_mock = MagicMock()
+    obj_mock = MagicMock()
+    branch_mock.object.return_value = obj_mock
+
+    sharded = shard_qid(QID)
+    log_obj = MagicMock()
+    log_obj.path = f"{sharded}/components/output/run.log"
+    branch_mock.objects.return_value = iter([log_obj])
+
+    with (
+        patch("tasks.write_metadata.lakefs_client"),
+        patch("tasks.write_metadata.lakefs.repository") as mock_repo,
+    ):
+        mock_repo.return_value.branch.return_value = branch_mock
+        write_metadata.fn(
+            qid=QID,
+            model_image=MODEL_IMAGE,
+            model_tag=MODEL_TAG,
+            run_start=_END_TIME,
+            status="success",
+            input_data_files=[],
+        )
+
+    fdo_call = next(c for c in obj_mock.upload.call_args_list if b"fdo:hasComponent" in c.kwargs.get("data", b""))
+    fdo = _json.loads(fdo_call.kwargs["data"])
+    log_comp = next((c for c in fdo["kernel"]["fdo:hasComponent"] if "run.log" in c["@id"]), None)
+    assert log_comp is not None, "run.log not found in fdo:hasComponent"
+    assert log_comp.get("mediaType") == "text/plain", f"Expected text/plain, got {log_comp.get('mediaType')}"
+
+
 def test_mint_model_qid_deterministic():
     assert mint_model_qid(MODEL_IMAGE) == mint_model_qid(MODEL_IMAGE)
 

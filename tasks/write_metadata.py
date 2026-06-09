@@ -151,10 +151,13 @@ def write_metadata(
     prefixes = [f"{sharded}/components/input/"]
     if status == "success":
         prefixes.append(f"{sharded}/components/output/")
+    _FALLBACK_TYPES = {".log": "text/plain", ".txt": "text/plain", ".tsv": "text/tab-separated-values"}
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
         rel_path = obj.path[len(f"{sharded}/"):]
-        mime, _ = mimetypes.guess_type(obj.path)
-        entity = {"@id": rel_path, "@type": "File", "name": obj.path.split("/")[-1]}
+        name = obj.path.split("/")[-1]
+        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+        mime = mimetypes.guess_type(obj.path)[0] or _FALLBACK_TYPES.get(ext)
+        entity = {"@id": rel_path, "@type": "File", "name": name}
         if mime:
             entity["encodingFormat"] = mime
         file_entities.append(entity)
