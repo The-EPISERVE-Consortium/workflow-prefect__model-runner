@@ -72,6 +72,8 @@ def _build_fdo(
         commit_id = commit_ids[i] if i < len(commit_ids) else None
         if src_uri.startswith("lakefs://"):
             entry_id = _lakefs_uri_to_doip_url(src_uri, commit_id)
+        elif "/doip/retrieve/" in src_uri and commit_id:
+            entry_id = f"{src_uri}?version={commit_id}"
         else:
             entry_id = src_uri
         entry = {"@id": entry_id, "@type": "prov:Entity"}

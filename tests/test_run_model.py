@@ -493,6 +493,26 @@ def test_fdo_prov_used_source_uris():
     assert used[1]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q2222222222222/extra.parquet"
 
 
+def test_fdo_prov_used_doip_url_with_commit():
+    doip_files = [
+        ["https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet", "input.parquet"],
+    ]
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
+                                  input_data_files=doip_files, input_commit_ids=["abc123"]))
+    used = fdo["provenance"]["prov:used"]
+    assert used[0]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet?version=abc123"
+
+
+def test_fdo_prov_used_doip_url_without_commit():
+    doip_files = [
+        ["https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet", "input.parquet"],
+    ]
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
+                                  input_data_files=doip_files, input_commit_ids=[None]))
+    used = fdo["provenance"]["prov:used"]
+    assert used[0]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet"
+
+
 def test_fdo_prov_used_includes_sql_when_present():
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
                                   input_data_files=_INPUT_DATA_FILES, data_transformation_sql=_SQL))
