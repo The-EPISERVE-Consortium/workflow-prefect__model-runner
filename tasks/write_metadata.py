@@ -152,8 +152,6 @@ def write_metadata(
     if status == "success":
         prefixes.append(f"{sharded}/components/output/")
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
-        if obj.path.endswith("/run.log"):
-            continue
         rel_path = obj.path[len(f"{sharded}/"):]
         mime, _ = mimetypes.guess_type(obj.path)
         entity = {"@id": rel_path, "@type": "File", "name": obj.path.split("/")[-1]}

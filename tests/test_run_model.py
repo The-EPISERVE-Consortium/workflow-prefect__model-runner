@@ -643,41 +643,6 @@ def test_write_metadata_rocrate_uses_model_qid():
     assert software_node["identifier"] == expected_model_qid
 
 
-def test_write_metadata_excludes_run_log():
-    branch_mock = MagicMock()
-    obj_mock = MagicMock()
-    branch_mock.object.return_value = obj_mock
-    sharded = shard_qid(QID)
-
-    run_log = MagicMock()
-    run_log.path = f"{sharded}/components/output/run.log"
-    forecast = MagicMock()
-    forecast.path = f"{sharded}/components/output/forecast.csv"
-    branch_mock.objects.return_value = iter([run_log, forecast])
-
-    with (
-        patch("tasks.write_metadata.lakefs_client"),
-        patch("tasks.write_metadata.lakefs.repository") as mock_repo,
-    ):
-        mock_repo.return_value.branch.return_value = branch_mock
-        write_metadata.fn(
-            qid=QID,
-            model_image=MODEL_IMAGE,
-            model_tag=MODEL_TAG,
-            run_start=_END_TIME,
-            status="success",
-            input_data_files=[],
-        )
-
-    rocrate_call = next(
-        c for c in obj_mock.upload.call_args_list
-        if b"ro/crate" in c.kwargs.get("data", b"")
-    )
-    rocrate = _json.loads(rocrate_call.kwargs["data"])
-    ids = {node["@id"] for node in rocrate["@graph"]}
-    assert not any("run.log" in i for i in ids)
-    assert any("forecast.csv" in i for i in ids)
-
 
 def test_mint_model_qid_deterministic():
     assert mint_model_qid(MODEL_IMAGE) == mint_model_qid(MODEL_IMAGE)
