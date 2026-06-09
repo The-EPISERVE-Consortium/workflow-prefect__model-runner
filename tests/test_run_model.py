@@ -352,6 +352,8 @@ def test_submit_raises_on_failure():
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
         patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match=RUN_ID):
