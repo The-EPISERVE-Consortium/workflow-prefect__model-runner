@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -10,9 +11,19 @@ from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
+LAKECTL_PYTHON_IMAGE = "ghcr.io/the-episerve-consortium/lakectl-python:latest"
+
 
 @task
-def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, namespace: str = "default"):
+def submit_and_wait(
+    run_id: str,
+    model_image: str,
+    model_tag: str,
+    qid: str,
+    namespace: str = "default",
+    input_data_files: list[list[str]] | None = None,
+    data_transformation_sql: list[str] | None = None,
+):
     """
     Submit a Kubernetes Job with the three-container pattern and wait for completion.
 
@@ -29,6 +40,11 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
 
     lakefs_run_path = f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}"
     lakefs_host = os.environ["LAKEFS_HOST"]
+
+    pull_spec = []
+    for i, (src_uri, filename) in enumerate(input_data_files or []):
+        sql = (data_transformation_sql[i] if data_transformation_sql and i < len(data_transformation_sql) else "") or ""
+        pull_spec.append([src_uri, filename, sql] if sql else [src_uri, filename])
 
     lakefs_env = [
         client.V1EnvVar(name="LAKECTL_SERVER_ENDPOINT_URL", value=lakefs_host),
@@ -48,6 +64,7 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
                 )
             ),
         ),
+        client.V1EnvVar(name="PULL_SPEC", value=json.dumps(pull_spec)),
     ]
 
     workdir_mount = client.V1VolumeMount(name="workdir", mount_path="/work")
@@ -63,11 +80,12 @@ def submit_and_wait(run_id: str, model_image: str, model_tag: str, qid: str, nam
                     init_containers=[
                         client.V1Container(
                             name="lakefs-pull",
-                            image="treeverse/lakectl:latest",
+                            image=LAKECTL_PYTHON_IMAGE,
                             command=["/bin/sh", "-c"],
                             args=[
                                 f"mkdir -p /work/input /work/output && "
-                                f"lakectl fs download --recursive {lakefs_run_path}/components/input/ /work/input/"
+                                f"lakectl fs download {lakefs_run_path}/components/input/config.json /work/input/config.json && "
+                                f"python3 /usr/local/bin/pull.py"
                             ],
                             env=lakefs_env,
                             volume_mounts=[workdir_mount],

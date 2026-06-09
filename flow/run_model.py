@@ -50,7 +50,7 @@ def model_pipeline(
 
     prefect_payload_json = json.dumps(flow_run.parameters)
 
-    input_commit_ids = stage_input(
+    versioned_input_data_files = stage_input(
         input_data_files=input_data_files,
         config_json=config_json,
         prefect_payload_json=prefect_payload_json,
@@ -65,6 +65,8 @@ def model_pipeline(
             model_tag=model_tag,
             qid=qid,
             namespace=namespace,
+            input_data_files=versioned_input_data_files,
+            data_transformation_sql=data_transformation_sql,
         )
         status = "success"
     finally:
@@ -74,9 +76,8 @@ def model_pipeline(
             model_tag=model_tag,
             run_start=run_start,
             status=status,
-            input_data_files=input_data_files,
+            input_data_files=versioned_input_data_files,
             data_transformation_sql=data_transformation_sql,
-            input_commit_ids=input_commit_ids,
         )
 
     return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/components/output/"

@@ -52,7 +52,6 @@ def _build_fdo(
     file_entities: list,
     input_data_files: list[list[str]] | None = None,
     data_transformation_sql: list[str] | None = None,
-    input_commit_ids: list[str | None] | None = None,
 ) -> bytes:
     model_name = model_image.split("/")[-1]
     components = []
@@ -66,14 +65,15 @@ def _build_fdo(
         components.append(component)
 
     sql_list = data_transformation_sql or []
-    commit_ids = input_commit_ids or []
     prov_used = []
     for i, (src_uri, _) in enumerate(input_data_files or []):
-        commit_id = commit_ids[i] if i < len(commit_ids) else None
-        if src_uri.startswith("lakefs://"):
-            entry_id = _lakefs_uri_to_doip_url(src_uri, commit_id)
-        elif "/doip/retrieve/" in src_uri and commit_id:
-            entry_id = f"{src_uri}?version={commit_id}"
+        commit_id = None
+        if "?version=" in src_uri:
+            base_uri, commit_id = src_uri.split("?version=", 1)
+        else:
+            base_uri = src_uri
+        if base_uri.startswith("lakefs://"):
+            entry_id = _lakefs_uri_to_doip_url(base_uri, commit_id)
         else:
             entry_id = src_uri
         entry = {"@id": entry_id, "@type": "prov:Entity"}
@@ -136,7 +136,6 @@ def write_metadata(
     status: str,
     input_data_files: list[list[str]],
     data_transformation_sql: list[str] | None = None,
-    input_commit_ids: list[str | None] | None = None,
 ):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     end_time = run_start + timedelta(seconds=computation_time)
@@ -153,6 +152,8 @@ def write_metadata(
     if status == "success":
         prefixes.append(f"{sharded}/components/output/")
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
+        if obj.path.endswith("/run.log"):
+            continue
         rel_path = obj.path[len(f"{sharded}/"):]
         mime, _ = mimetypes.guess_type(obj.path)
         entity = {"@id": rel_path, "@type": "File", "name": obj.path.split("/")[-1]}
@@ -235,7 +236,6 @@ def write_metadata(
         file_entities=file_entities,
         input_data_files=input_data_files,
         data_transformation_sql=data_transformation_sql,
-        input_commit_ids=input_commit_ids,
     )
     branch_handle \
         .object(f"{sharded}/{qid}.fdo.json") \

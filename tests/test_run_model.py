@@ -1,12 +1,13 @@
+import json as _json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from flow.run_model import mint_qid, model_pipeline
 from tasks.stage_input import stage_input
-from tasks.submit_and_wait import submit_and_wait
+from tasks.submit_and_wait import submit_and_wait, LAKECTL_PYTHON_IMAGE
 from tasks.write_metadata import write_metadata, _build_fdo, mint_model_qid
 from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
@@ -28,7 +29,7 @@ MODEL_CONFIG_JSON        = '{"horizon_weeks": 4, "n_reference_weeks": 4}'
 PREFECT_PAYLOAD_JSON     = '{"model_image": "ghcr.io/example/model", "model_tag": "v1"}'
 MODEL_IMAGE       = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
 MODEL_TAG         = "v0.1.0"
-FAKE_DATA         = b"fake-parquet-bytes"
+FAKE_COMMIT_ID    = "fake-commit-id"
 
 
 @pytest.fixture(autouse=True)
@@ -48,19 +49,13 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("LAKEFS_SECRET_KEY", "fake-secret-key")
 
 
-def _lakefs_mocks(*, src_get_error=None, dst_upload_errors=None):
-    src_obj = MagicMock()
-    if src_get_error:
-        src_obj.reader.side_effect = src_get_error
-    else:
-        src_obj.reader.return_value.read.return_value = FAKE_DATA
-
+def _lakefs_mocks(*, dst_upload_errors=None):
     dst_obj = MagicMock()
     if dst_upload_errors is not None:
         dst_obj.upload.side_effect = dst_upload_errors
 
     src_branch_mock = MagicMock()
-    src_branch_mock.object.return_value = src_obj
+    src_branch_mock.head.id = FAKE_COMMIT_ID
 
     dst_branch_mock = MagicMock()
     dst_branch_mock.object.return_value = dst_obj
@@ -111,18 +106,25 @@ def test_mint_qid_unique():
 # ── run_id / return path ──────────────────────────────────────────────────────
 
 def test_return_path_uses_qid():
-    with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait"), patch("flow.run_model.write_metadata"):
+    with (
+        patch("flow.run_model.stage_input", return_value=[]),
+        patch("flow.run_model.submit_and_wait"),
+        patch("flow.run_model.write_metadata"),
+    ):
         result = model_pipeline.fn(
             input_data_files=INPUT_DATA_FILES,
             model_image=MODEL_IMAGE,
             config_json=MODEL_CONFIG_JSON,
         )
-    # lakefs://model-runs/main/pp/qq/rr/Qxxxx/components/output/
     assert re.search(r"/Q\d+/components/output/$", result)
 
 
 def test_k8s_job_name_format():
-    with patch("flow.run_model.stage_input"), patch("flow.run_model.submit_and_wait") as mock_submit, patch("flow.run_model.write_metadata"):
+    with (
+        patch("flow.run_model.stage_input", return_value=[]),
+        patch("flow.run_model.submit_and_wait") as mock_submit,
+        patch("flow.run_model.write_metadata"),
+    ):
         model_pipeline.fn(
             input_data_files=INPUT_DATA_FILES,
             model_image=MODEL_IMAGE,
@@ -135,122 +137,114 @@ def test_k8s_job_name_format():
 
 # ── stage_input ───────────────────────────────────────────────────────────────
 
-HTTP_INPUT_FILE = [["https://example.com/data/input.parquet", "input.parquet"]]
+def test_stage_input_resolves_lakefs_commit():
+    repo_factory, src_branch_mock, _, _ = _lakefs_mocks()
+    with _stage_patches(repo_factory)[0], _stage_patches(repo_factory)[1]:
+        versioned = stage_input.fn(
+            input_data_files=SINGLE_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
+    assert versioned[0][0].endswith(f"?version={FAKE_COMMIT_ID}")
 
 
-def test_stage_input_downloads_http_uri():
+def test_stage_input_no_commit_for_plain_http():
+    HTTP_INPUT_FILE = [["https://example.com/data/input.parquet", "input.parquet"]]
     dst_obj = MagicMock()
-    dst_branch_mock = MagicMock()
-    dst_branch_mock.object.return_value = dst_obj
     dst_repo_mock = MagicMock()
-    dst_repo_mock.branch.return_value = dst_branch_mock
+    dst_repo_mock.branch.return_value.object.return_value = dst_obj
 
     with (
         patch("tasks.stage_input.lakefs_client"),
         patch("tasks.stage_input.lakefs.repository", return_value=dst_repo_mock),
-        patch("tasks.stage_input.requests.get") as mock_get,
     ):
-        mock_get.return_value = MagicMock(content=FAKE_DATA, raise_for_status=MagicMock())
-        stage_input.fn(input_data_files=HTTP_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
+        versioned = stage_input.fn(
+            input_data_files=HTTP_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
+    assert versioned[0][0] == "https://example.com/data/input.parquet"
 
-    mock_get.assert_called_once_with("https://example.com/data/input.parquet", timeout=120)
+
+def test_stage_input_does_not_upload_data_files():
+    repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
+        stage_input.fn(
+            input_data_files=INPUT_DATA_FILES,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
     sharded = shard_qid(QID)
     dst_paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
-    assert f"{sharded}/components/input/input.parquet" in dst_paths
-
-
-def test_stage_input_raises_when_http_download_fails():
-    dst_repo_mock = MagicMock()
-    dst_repo_mock.branch.return_value = MagicMock()
-
-    with (
-        patch("tasks.stage_input.lakefs_client"),
-        patch("tasks.stage_input.lakefs.repository", return_value=dst_repo_mock),
-        patch("tasks.stage_input.requests.get", side_effect=Exception("connection refused")),
-    ):
-        with pytest.raises(RuntimeError, match="Failed to read input file"):
-            stage_input.fn(input_data_files=HTTP_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
-
-def test_stage_input_raises_when_file_missing():
-    repo_factory, _, _, _ = _lakefs_mocks(src_get_error=Exception("404 Not Found"))
-    patches = _stage_patches(repo_factory)
-    with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to read input file"):
-            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
-
-def test_stage_input_raises_when_data_upload_fails():
-    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=Exception("permission denied"))
-    patches = _stage_patches(repo_factory)
-    with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to stage"):
-            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
+    assert f"{sharded}/components/input/SARI-Hospitalisierungsinzidenz.parquet" not in dst_paths
+    assert f"{sharded}/components/input/GrippeWeb_Daten_des_Wochenberichts.parquet" not in dst_paths
+    assert dst_obj.upload.call_count == 2  # config.json + config_prefect.json
 
 
 def test_stage_input_raises_when_config_upload_fails():
-    # first call (data file) succeeds, second call (config.json) fails
-    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, Exception("permission denied")])
+    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[Exception("permission denied")])
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage config.json"):
-            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
+            stage_input.fn(
+                input_data_files=SINGLE_INPUT_FILE,
+                config_json=MODEL_CONFIG_JSON,
+                prefect_payload_json=PREFECT_PAYLOAD_JSON,
+                qid=QID,
+            )
 
 
 def test_stage_input_raises_when_prefect_config_upload_fails():
-    # data file + config.json succeed, config_prefect.json fails
-    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, None, Exception("permission denied")])
+    repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, Exception("permission denied")])
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
         with pytest.raises(RuntimeError, match="Failed to stage config_prefect.json"):
-            stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
-
-def test_stage_input_calls_get_and_upload():
-    repo_factory, src_branch_mock, dst_branch_mock, dst_obj = _lakefs_mocks()
-    patches = _stage_patches(repo_factory)
-    with patches[0], patches[1]:
-        stage_input.fn(input_data_files=INPUT_DATA_FILES, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
-    # src: one read per input file
-    src_paths_called = [c.args[0] for c in src_branch_mock.object.call_args_list]
-    assert "05/22/57/Q0522578154235/components/SARI-Hospitalisierungsinzidenz.parquet" in src_paths_called
-    assert "32/74/12/Q3274128860531/components/GrippeWeb_Daten_des_Wochenberichts.parquet" in src_paths_called
-
-    # dst: one upload per input file + config.json + config_prefect.json
-    assert dst_obj.upload.call_count == 4
-    sharded = shard_qid(QID)
-    dst_paths = [c.args[0] for c in dst_branch_mock.object.call_args_list]
-    assert f"{sharded}/components/input/SARI-Hospitalisierungsinzidenz.parquet" in dst_paths
-    assert f"{sharded}/components/input/GrippeWeb_Daten_des_Wochenberichts.parquet" in dst_paths
-    assert f"{sharded}/components/input/config.json" in dst_paths
-    assert f"{sharded}/components/input/config_prefect.json" in dst_paths
+            stage_input.fn(
+                input_data_files=SINGLE_INPUT_FILE,
+                config_json=MODEL_CONFIG_JSON,
+                prefect_payload_json=PREFECT_PAYLOAD_JSON,
+                qid=QID,
+            )
 
 
 def test_stage_input_config_uploaded_verbatim():
     repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
+        stage_input.fn(
+            input_data_files=SINGLE_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
     config_idx = next(
         i for i, c in enumerate(dst_branch_mock.object.call_args_list)
-        if c.args[0].endswith("config.json")
+        if c.args[0].endswith("config.json") and "prefect" not in c.args[0]
     )
     assert dst_obj.upload.call_args_list[config_idx].kwargs["data"] == MODEL_CONFIG_JSON.encode()
 
 
-def test_stage_input_prefect_payload_uploaded_verbatim():
+def test_stage_input_prefect_payload_contains_versioned_urls():
     repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        stage_input.fn(input_data_files=SINGLE_INPUT_FILE, config_json=MODEL_CONFIG_JSON, prefect_payload_json=PREFECT_PAYLOAD_JSON, qid=QID)
-
+        stage_input.fn(
+            input_data_files=SINGLE_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
     prefect_idx = next(
         i for i, c in enumerate(dst_branch_mock.object.call_args_list)
         if c.args[0].endswith("config_prefect.json")
     )
-    assert dst_obj.upload.call_args_list[prefect_idx].kwargs["data"] == PREFECT_PAYLOAD_JSON.encode()
+    uploaded = _json.loads(dst_obj.upload.call_args_list[prefect_idx].kwargs["data"])
+    versioned_uri = uploaded["input_data_files"][0][0]
+    assert f"?version={FAKE_COMMIT_ID}" in versioned_uri
 
 
 # ── submit_and_wait ───────────────────────────────────────────────────────────
@@ -273,10 +267,33 @@ def test_job_spec():
     assert len(pod.init_containers) == 2
     assert len(pod.containers) == 1
     assert pod.init_containers[0].name == "lakefs-pull"
+    assert pod.init_containers[0].image == LAKECTL_PYTHON_IMAGE
     assert pod.init_containers[1].name == "model"
     assert pod.init_containers[1].image == f"{MODEL_IMAGE}:{MODEL_TAG}"
     assert pod.containers[0].name == "lakefs-push"
     assert any(v.name == "workdir" for v in pod.volumes)
+
+
+def test_job_pull_spec_env():
+    batch_v1 = _k8s_batch_mock(succeeded=True)
+    sql = ["SELECT * FROM df WHERE x = 1"]
+    versioned_files = [["https://doip.example.com/doip/retrieve/Q123/file.parquet?version=abc", "file.parquet"]]
+    with (
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
+        patch("time.sleep"),
+    ):
+        submit_and_wait.fn(
+            run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID,
+            input_data_files=versioned_files, data_transformation_sql=sql,
+        )
+
+    job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
+    pull_env = {e.name: e.value for e in job.spec.template.spec.init_containers[0].env if e.value}
+    pull_spec = _json.loads(pull_env["PULL_SPEC"])
+    assert pull_spec == [["https://doip.example.com/doip/retrieve/Q123/file.parquet?version=abc", "file.parquet", "SELECT * FROM df WHERE x = 1"]]
 
 
 def test_job_secret_refs():
@@ -291,7 +308,6 @@ def test_job_secret_refs():
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
-    # lakefs-pull carries the credentials for lakectl
     env = job.spec.template.spec.init_containers[0].env
     secret_refs = {
         e.name: e.value_from.secret_key_ref
@@ -319,7 +335,6 @@ def test_submit_polls_until_succeeded():
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
 
-    # one pending poll → one succeeded poll → break
     assert batch_v1.read_namespaced_job.call_count == 2
 
 
@@ -364,7 +379,7 @@ def test_submit_raises_on_failure():
 
 def test_pipeline_return_path():
     with (
-        patch("flow.run_model.stage_input") as mock_stage,
+        patch("flow.run_model.stage_input", return_value=[]),
         patch("flow.run_model.submit_and_wait") as mock_submit,
         patch("flow.run_model.write_metadata"),
     ):
@@ -376,13 +391,12 @@ def test_pipeline_return_path():
 
     assert result.startswith(f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/")
     assert result.endswith("/components/output/")
-    mock_stage.assert_called_once()
     mock_submit.assert_called_once()
 
 
 def test_pipeline_empty_model_tag_defaults_to_latest():
     with (
-        patch("flow.run_model.stage_input"),
+        patch("flow.run_model.stage_input", return_value=[]),
         patch("flow.run_model.submit_and_wait") as mock_submit,
         patch("flow.run_model.write_metadata"),
     ):
@@ -397,10 +411,22 @@ def test_pipeline_empty_model_tag_defaults_to_latest():
     assert kwargs["model_tag"] == "latest"
 
 
-# ── _build_fdo ────────────────────────────────────────────────────────────────
+def test_pipeline_passes_versioned_files_to_submit():
+    versioned = [["https://doip.example.com/doip/retrieve/Q123/f.parquet?version=abc", "f.parquet"]]
+    with (
+        patch("flow.run_model.stage_input", return_value=versioned),
+        patch("flow.run_model.submit_and_wait") as mock_submit,
+        patch("flow.run_model.write_metadata"),
+    ):
+        model_pipeline.fn(
+            input_data_files=INPUT_DATA_FILES,
+            model_image=MODEL_IMAGE,
+            config_json=MODEL_CONFIG_JSON,
+        )
+    assert mock_submit.call_args.kwargs["input_data_files"] == versioned
 
-import json as _json
-from datetime import timezone
+
+# ── _build_fdo ────────────────────────────────────────────────────────────────
 
 _START_TIME = datetime(2026, 6, 3, 11, 0, 0, tzinfo=timezone.utc)
 _END_TIME   = datetime(2026, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
@@ -495,10 +521,10 @@ def test_fdo_prov_used_source_uris():
 
 def test_fdo_prov_used_doip_url_with_commit():
     doip_files = [
-        ["https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet", "input.parquet"],
+        ["https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet?version=abc123", "input.parquet"],
     ]
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
-                                  input_data_files=doip_files, input_commit_ids=["abc123"]))
+                                  input_data_files=doip_files))
     used = fdo["provenance"]["prov:used"]
     assert used[0]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet?version=abc123"
 
@@ -508,7 +534,7 @@ def test_fdo_prov_used_doip_url_without_commit():
         ["https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet", "input.parquet"],
     ]
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
-                                  input_data_files=doip_files, input_commit_ids=[None]))
+                                  input_data_files=doip_files))
     used = fdo["provenance"]["prov:used"]
     assert used[0]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet"
 
@@ -568,7 +594,6 @@ def test_write_metadata_uploads_fdo():
 
 
 def test_write_metadata_rocrate_uses_model_qid():
-    """ro-crate CreateAction.instrument must reference the stable model QID."""
     branch_mock = MagicMock()
     obj_mock = MagicMock()
     branch_mock.object.return_value = obj_mock
@@ -603,6 +628,42 @@ def test_write_metadata_rocrate_uses_model_qid():
     software_node = graph[expected_model_qid]
     assert software_node["@type"] == "SoftwareApplication"
     assert software_node["identifier"] == expected_model_qid
+
+
+def test_write_metadata_excludes_run_log():
+    branch_mock = MagicMock()
+    obj_mock = MagicMock()
+    branch_mock.object.return_value = obj_mock
+    sharded = shard_qid(QID)
+
+    run_log = MagicMock()
+    run_log.path = f"{sharded}/components/output/run.log"
+    forecast = MagicMock()
+    forecast.path = f"{sharded}/components/output/forecast.csv"
+    branch_mock.objects.return_value = iter([run_log, forecast])
+
+    with (
+        patch("tasks.write_metadata.lakefs_client"),
+        patch("tasks.write_metadata.lakefs.repository") as mock_repo,
+    ):
+        mock_repo.return_value.branch.return_value = branch_mock
+        write_metadata.fn(
+            qid=QID,
+            model_image=MODEL_IMAGE,
+            model_tag=MODEL_TAG,
+            run_start=_END_TIME,
+            status="success",
+            input_data_files=[],
+        )
+
+    rocrate_call = next(
+        c for c in obj_mock.upload.call_args_list
+        if b"ro/crate" in c.kwargs.get("data", b"")
+    )
+    rocrate = _json.loads(rocrate_call.kwargs["data"])
+    ids = {node["@id"] for node in rocrate["@graph"]}
+    assert not any("run.log" in i for i in ids)
+    assert any("forecast.csv" in i for i in ids)
 
 
 def test_mint_model_qid_deterministic():
