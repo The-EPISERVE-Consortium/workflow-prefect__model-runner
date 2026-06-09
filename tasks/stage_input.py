@@ -28,7 +28,7 @@ def stage_input(
     prefect_payload_json: str,
     qid: str,
     data_transformation_sql: list[str] | None = None,
-):
+) -> list[str | None]:
     """
     Copy input files from data-processed and write config.json into the run path.
 
@@ -37,12 +37,15 @@ def stage_input(
     Writes to:
       lakefs://model-runs/main/<sharded-qid>/components/input/<filename>
       lakefs://model-runs/main/<sharded-qid>/components/input/config.json
+    Returns:
+      list of lakeFS HEAD commit IDs at download time (None for non-lakeFS sources)
     """
     logger = get_run_logger()
     lc = lakefs_client()
     dst_prefix = f"{shard_qid(qid)}/components/input"
     dst_branch_handle = lakefs.repository(LAKEFS_RUN_REPO, client=lc).branch(LAKEFS_BRANCH)
     sql_list = data_transformation_sql or []
+    commit_ids: list[str | None] = []
 
     for i, (src_uri, filename) in enumerate(input_data_files):
         sql = sql_list[i] if i < len(sql_list) else ""
@@ -51,14 +54,13 @@ def stage_input(
         try:
             if src_uri.startswith("lakefs://"):
                 src_repo, src_branch, path = src_uri[len("lakefs://"):].split("/", 2)
-                data = (
-                    lakefs.repository(src_repo, client=lc)
-                    .branch(src_branch)
-                    .object(path)
-                    .reader()
-                    .read()
-                )
+                src_branch_handle = lakefs.repository(src_repo, client=lc).branch(src_branch)
+                commit_id = src_branch_handle.head.id
+                commit_ids.append(commit_id)
+                logger.info(f"Source branch HEAD commit: {commit_id}")
+                data = src_branch_handle.object(path).reader().read()
             else:
+                commit_ids.append(None)
                 resp = requests.get(src_uri, timeout=120)
                 resp.raise_for_status()
                 data = resp.content
@@ -107,3 +109,5 @@ def stage_input(
         logger.info("config_prefect.json staged successfully")
     except Exception as e:
         raise RuntimeError(f"Failed to stage config_prefect.json to {dst_prefect}") from e
+
+    return commit_ids
