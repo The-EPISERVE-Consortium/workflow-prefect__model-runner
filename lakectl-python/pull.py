@@ -58,25 +58,37 @@ def download(src_uri: str, filename: str) -> None:
         lakectl_uri = _doip_to_lakefs_uri(src_uri)
     else:
         raise ValueError(f"Unsupported source URI scheme: {src_uri}")
+    print(f"[pull] downloading {filename}")
+    print(f"[pull]   src : {src_uri}")
+    print(f"[pull]   ref : {lakectl_uri}")
     subprocess.run(["lakectl", "fs", "download", lakectl_uri, out_path], check=True)
-    print(f"download {filename} ... done!")
+    size = os.path.getsize(out_path)
+    print(f"[pull] {filename} done ({size:,} bytes)")
 
 
 def apply_sql(filename: str, sql: str) -> None:
     path = os.path.join(WORK_INPUT, filename)
     df = pd.read_parquet(path)
+    rows_before = len(df)
+    print(f"[pull] applying SQL to {filename} ({rows_before:,} rows in)")
+    print(f"[pull]   sql : {sql}")
     conn = duckdb.connect()
     conn.register("df", df)
     result = conn.execute(sql).df()
+    rows_after = len(result)
     buf = io.BytesIO()
     result.to_parquet(buf, index=False)
     with open(path, "wb") as fh:
         fh.write(buf.getvalue())
-    print(f"applied SQL to {filename}")
+    print(f"[pull] {filename} filtered: {rows_before:,} → {rows_after:,} rows")
 
 
 def main() -> None:
     pull_spec = json.loads(os.environ["PULL_SPEC"])
+    print(f"[pull] {len(pull_spec)} file(s) to fetch:")
+    for i, entry in enumerate(pull_spec):
+        print(f"[pull]   [{i + 1}] {entry[1]}")
+    print()
     os.makedirs(WORK_INPUT, exist_ok=True)
     for entry in pull_spec:
         src_uri, filename = entry[0], entry[1]
@@ -84,6 +96,8 @@ def main() -> None:
         download(src_uri, filename)
         if sql:
             apply_sql(filename, sql)
+    print()
+    print("[pull] all files ready")
 
 
 if __name__ == "__main__":
