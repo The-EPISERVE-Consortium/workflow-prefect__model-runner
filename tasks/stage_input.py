@@ -1,35 +1,27 @@
 import json
 import os
-import re
 
 import lakefs
-import requests
 from prefect import task
 from prefect.logging import get_run_logger
 
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
 
-DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
+DOIP_LAKEFS_REPO = os.getenv("DOIP_LAKEFS_REPO", "data-processed")
+DOIP_LAKEFS_BRANCH = os.getenv("DOIP_LAKEFS_BRANCH", "main")
 
 
-def _resolve_doip_commit(src_uri: str, logger) -> str | None:
-    """Return the HEAD commit ID for a DOIP URL by calling /doip/versions?limit=1."""
-    m = re.search(r"/doip/retrieve/(Q\d+)/", src_uri, re.IGNORECASE)
-    if not m:
-        return None
-    qid = m.group(1).upper()
+def _resolve_doip_commit_via_lakefs(lc, logger) -> str | None:
+    """Return the HEAD commit ID of the lakeFS branch that backs DOIP objects."""
     try:
-        resp = requests.get(f"{DOIP_BASE_URL}/doip/versions/{qid}?limit=1", timeout=10)
-        resp.raise_for_status()
-        versions = resp.json().get("versions", [])
-        if versions:
-            commit_id = versions[0]["commit_id"]
-            logger.info(f"Resolved HEAD commit for {qid}: {commit_id}")
-            return commit_id
+        branch_handle = lakefs.repository(DOIP_LAKEFS_REPO, client=lc).branch(DOIP_LAKEFS_BRANCH)
+        commit_id = branch_handle.head.id
+        logger.info(f"Resolved DOIP source HEAD commit ({DOIP_LAKEFS_REPO}/{DOIP_LAKEFS_BRANCH}): {commit_id}")
+        return commit_id
     except Exception as e:
-        logger.warning(f"Could not resolve commit ID for {src_uri}: {e}")
-    return None
+        logger.warning(f"Could not resolve HEAD commit for {DOIP_LAKEFS_REPO}/{DOIP_LAKEFS_BRANCH}: {e}")
+        return None
 
 
 @task
@@ -66,7 +58,7 @@ def stage_input(
                 commit_ids.append(commit_id)
                 logger.info(f"Source branch HEAD commit: {commit_id}")
             elif "/doip/retrieve/" in src_uri:
-                commit_ids.append(_resolve_doip_commit(src_uri, logger))
+                commit_ids.append(_resolve_doip_commit_via_lakefs(lc, logger))
             else:
                 commit_ids.append(None)
         except Exception as e:

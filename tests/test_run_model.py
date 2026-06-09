@@ -149,6 +149,19 @@ def test_stage_input_resolves_lakefs_commit():
     assert versioned[0][0].endswith(f"?version={FAKE_COMMIT_ID}")
 
 
+def test_stage_input_resolves_doip_commit():
+    DOIP_INPUT_FILE = [["https://doip.episerve.zib.de/doip/retrieve/Q8399965930733/input.parquet", "input.parquet"]]
+    repo_factory, src_branch_mock, _, _ = _lakefs_mocks()
+    with _stage_patches(repo_factory)[0], _stage_patches(repo_factory)[1]:
+        versioned = stage_input.fn(
+            input_data_files=DOIP_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
+    assert versioned[0][0].endswith(f"?version={FAKE_COMMIT_ID}")
+
+
 def test_stage_input_no_commit_for_plain_http():
     HTTP_INPUT_FILE = [["https://example.com/data/input.parquet", "input.parquet"]]
     dst_obj = MagicMock()
