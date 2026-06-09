@@ -1,4 +1,6 @@
 import io
+import os
+import re
 
 import duckdb
 import lakefs
@@ -9,6 +11,27 @@ from prefect.logging import get_run_logger
 
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
+
+DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
+
+
+def _resolve_doip_commit(src_uri: str, logger) -> str | None:
+    """Return the HEAD commit ID for a DOIP URL by calling /doip/versions?limit=1."""
+    m = re.search(r"/doip/retrieve/(Q\d+)/", src_uri, re.IGNORECASE)
+    if not m:
+        return None
+    qid = m.group(1).upper()
+    try:
+        resp = requests.get(f"{DOIP_BASE_URL}/doip/versions/{qid}?limit=1", timeout=10)
+        resp.raise_for_status()
+        versions = resp.json().get("versions", [])
+        if versions:
+            commit_id = versions[0]["commit_id"]
+            logger.info(f"Resolved HEAD commit for {qid}: {commit_id}")
+            return commit_id
+    except Exception as e:
+        logger.warning(f"Could not resolve commit ID for {src_uri}: {e}")
+    return None
 
 
 def _apply_sql(data_bytes: bytes, sql: str) -> bytes:
@@ -59,6 +82,11 @@ def stage_input(
                 commit_ids.append(commit_id)
                 logger.info(f"Source branch HEAD commit: {commit_id}")
                 data = src_branch_handle.object(path).reader().read()
+            elif src_uri.startswith("https://") and "/doip/retrieve/" in src_uri:
+                commit_ids.append(_resolve_doip_commit(src_uri, logger))
+                resp = requests.get(src_uri, timeout=120)
+                resp.raise_for_status()
+                data = resp.content
             else:
                 commit_ids.append(None)
                 resp = requests.get(src_uri, timeout=120)
