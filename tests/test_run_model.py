@@ -260,6 +260,8 @@ def test_job_spec():
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
         patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
@@ -282,6 +284,8 @@ def test_job_secret_refs():
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
         patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
@@ -309,6 +313,8 @@ def test_submit_polls_until_succeeded():
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
         patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
         submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
