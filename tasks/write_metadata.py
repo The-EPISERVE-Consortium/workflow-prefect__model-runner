@@ -1,6 +1,8 @@
 import hashlib
 import json
 import mimetypes
+import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import lakefs
@@ -8,6 +10,31 @@ from prefect import task
 
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
 from tools.sharding import shard_qid
+
+DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
+
+
+def _lakefs_uri_to_doip_url(src_uri: str, commit_id: str | None = None) -> str:
+    """Convert a lakefs:// URI to a DOIP retrieve URL, appending ?version= when a commit ID is known."""
+    path = src_uri[len("lakefs://"):]
+    parts = path.split("/")
+    qid = None
+    component_parts = []
+    after_components = False
+    for part in parts:
+        if re.match(r"^Q\d+$", part, re.IGNORECASE):
+            qid = part.upper()
+        elif qid and part == "components":
+            after_components = True
+        elif after_components:
+            component_parts.append(part)
+    if not qid or not component_parts:
+        return src_uri
+    component = "/".join(component_parts)
+    url = f"{DOIP_BASE_URL}/doip/retrieve/{qid}/{component}"
+    if commit_id:
+        url += f"?version={commit_id}"
+    return url
 
 
 def mint_model_qid(docker_image: str) -> str:
@@ -42,11 +69,14 @@ def _build_fdo(
     commit_ids = input_commit_ids or []
     prov_used = []
     for i, (src_uri, _) in enumerate(input_data_files or []):
-        entry = {"@id": src_uri, "@type": "prov:Entity"}
+        commit_id = commit_ids[i] if i < len(commit_ids) else None
+        if src_uri.startswith("lakefs://"):
+            entry_id = _lakefs_uri_to_doip_url(src_uri, commit_id)
+        else:
+            entry_id = src_uri
+        entry = {"@id": entry_id, "@type": "prov:Entity"}
         if i < len(sql_list) and sql_list[i]:
             entry["schema:query"] = sql_list[i]
-        if i < len(commit_ids) and commit_ids[i]:
-            entry["prov:hadRevision"] = commit_ids[i]
         prov_used.append(entry)
 
     return json.dumps({
