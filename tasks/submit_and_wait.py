@@ -102,6 +102,7 @@ def submit_and_wait(
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
+                                f"for f in /work/input/*.parquet; do [ -f \"$f\" ] && lakectl fs upload \"$f\" {lakefs_run_path}/components/input/$(basename $f); done && "
                                 f"lakectl fs upload --source /work/output -r {lakefs_run_path}/components/output/ && "
                                 f"lakectl commit lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH} -m 'model run {run_id}'"
                             ],
