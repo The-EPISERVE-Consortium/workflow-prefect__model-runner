@@ -488,9 +488,9 @@ def test_fdo_prov_used_source_uris():
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES, input_data_files=_INPUT_DATA_FILES))
     used = fdo["provenance"]["prov:used"]
     assert len(used) == 2
-    assert used[0]["@id"] == _INPUT_DATA_FILES[0][0]
+    assert used[0]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q1111111111111/input.parquet"
     assert used[0]["@type"] == "prov:Entity"
-    assert used[1]["@id"] == _INPUT_DATA_FILES[1][0]
+    assert used[1]["@id"] == "https://doip.episerve.zib.de/doip/retrieve/Q2222222222222/extra.parquet"
 
 
 def test_fdo_prov_used_includes_sql_when_present():
