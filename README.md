@@ -1,6 +1,6 @@
 # workflow-prefect__model-runner
 
-Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes. It stages input data in lakeFS, submits a Kubernetes Job using a three-container pattern (pull → model → push), writes RO-Crate + FDO provenance metadata, and returns the lakeFS path to the output.
+Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes. It pins each input source to a lakeFS commit, stages the run config in lakeFS, submits a Kubernetes Job using a three-container pattern (pull → model → push), writes RO-Crate + FDO provenance metadata, and returns the lakeFS path to the output.
 
 ## Flow: `model_pipeline`
 
@@ -10,12 +10,21 @@ Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `input_data_files` | `list[[uri, filename]]` | *(required)* | List of `[lakefs_uri, target_filename]` pairs. The target filename is what the model container sees under `/work/input/`. |
+| `input_data_files` | `list[[uri, filename]]` | *(required)* | List of `[source_uri, target_filename]` pairs. The source URI is either `lakefs://<repo>/<branch>/<path>` or a DOIP retrieve URL — see [Supported input URIs](#supported-input-uris). The target filename is what the model container sees under `/work/input/`. |
 | `model_image` | `str` | *(required)* | Full GHCR image name, e.g. `ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel` |
 | `config_json` | `str` | *(required)* | JSON string written verbatim as `/work/input/config.json`, e.g. `{"horizon_weeks": 4, "n_reference_weeks": 4}` |
 | `model_tag` | `str` | `latest` | Image tag |
 | `namespace` | `str` | `default` | Kubernetes namespace in which the Job is created |
-| `data_transformation_sql` | `list[str] \| null` | `null` | Optional per-file SQL filter applied before staging (runs against a DuckDB table called `df`), parallel list to `input_data_files` |
+| `data_transformation_sql` | `list[str] \| null` | `null` | Optional per-file SQL filter applied in the pull container after download (runs against a DuckDB table called `df`), parallel list to `input_data_files` |
+
+### Supported input URIs
+
+The `lakefs-pull` init container (`lakectl-python/pull.py`) understands exactly two forms; anything else fails with `Unsupported source URI scheme`:
+
+- `lakefs://<repo>/<branch>/<path>` — rewritten to `lakefs://<repo>/<commit_id>/<path>` using the commit pinned by `stage_input`
+- `https://…/doip/retrieve/<QID>/<component>` — converted to a lakeFS URI in `DOIP_LAKEFS_REPO` (default `data-processed`) at the pinned commit. A DOIP URL with no resolved `?version=` commit is rejected.
+
+Plain HTTP(S) URLs are not supported.
 
 ### Example parameter payload
 
@@ -42,21 +51,23 @@ Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes.
 
 1. **Mints a QID** of the form `Q<unix-timestamp><3-digit-random>`, e.g. `Q1748526042817`. Used as the run identifier and sharded into `pp/qq/rr/QID` paths in lakeFS.
 
-2. **`stage_input`** — Downloads each input file (lakefs URI or HTTP URL), optionally filters it with DuckDB SQL, then uploads to `model-runs/main/<pp>/<qq>/<rr>/<QID>/components/input/<target_filename>`. Also uploads `config.json` and `config_prefect.json` (the full Prefect flow run parameters) to the same directory.
+2. **`stage_input`** — Does not move any data. Resolves the source commit for each input (branch HEAD for `lakefs://` URIs, the `DOIP_LAKEFS_REPO`/`DOIP_LAKEFS_BRANCH` HEAD for DOIP URLs) and appends `?version=<commit_id>` to the URI, so the Job fetches exactly that commit rather than whatever HEAD is when the pod starts. Uploads `config.json` (verbatim) and `config_prefect.json` (the full Prefect flow run parameters, with the versioned URIs substituted in) to `model-runs/main/<pp>/<qq>/<rr>/<QID>/components/input/`, and returns the versioned `input_data_files`.
 
-3. **`submit_and_wait`** — Submits a Kubernetes Job with three containers sharing an ephemeral `/work` volume:
+3. **`submit_and_wait`** — Submits a Kubernetes Job named `model-runner-<qid>` (lowercase) with three containers sharing an ephemeral `/work` volume:
 
-   | Container | Type | What it does |
-   |---|---|---|
-   | `lakefs-pull` | init | Downloads `components/input/` from lakeFS → `/work/input/` |
-   | `model` | init | Runs the model image; reads `/work/input/`, writes `/work/output/` |
-   | `lakefs-push` | main | Uploads `/work/output/` → `components/output/` and commits |
+   | Container | Type | Image | What it does |
+   |---|---|---|---|
+   | `lakefs-pull` | init | `ghcr.io/the-episerve-consortium/lakectl-python:latest` | Downloads `config.json`, then runs `pull.py` over the `PULL_SPEC` env var: fetches each pinned source file to `/work/input/<target_filename>` and applies its DuckDB SQL filter in place |
+   | `model` | init | `<model_image>:<model_tag>` | Reads `/work/input/`, writes `/work/output/` |
+   | `lakefs-push` | main | `treeverse/lakectl:latest` | Uploads `/work/output/` → `components/output/` and commits |
 
-   Polls until the Job succeeds or fails. Fails fast on `ImagePullBackOff` / `ErrImagePull` / `InvalidImageName`.
+   Polls every 5 s until the Job succeeds or fails. Fails fast on `ImagePullBackOff` / `ErrImagePull` / `InvalidImageName`.
 
-4. **`write_metadata`** (always runs, even on failure) — Scans `components/input/` and `components/output/` in lakeFS, then writes:
-   - `components/ro-crate-metadata.json` — RO-Crate 1.1 + Workflow Run Provenance record
-   - `<QID>.fdo.json` — FAIR Digital Object descriptor
+   Whatever the outcome, the per-container pod logs are uploaded to `components/output/run.log`. On failure the first log line starting with `ERROR:` is appended to the raised `RuntimeError`, so the model's own message is visible in the Prefect UI.
+
+4. **`write_metadata`** (always runs, even on failure) — Scans `components/input/` (plus `components/output/` on success) in lakeFS, then writes:
+   - `components/ro-crate-metadata.json` — RO-Crate 1.1 + Workflow Run Process 0.4 record. The model is referenced as a `SoftwareApplication` under a model QID derived from `sha256(model_image)`, stable across runs of the same image.
+   - `<QID>.fdo.json` — FAIR Digital Object descriptor. `kernel.fdo:hasComponent` lists every file with its MIME type (the DOIP server only serves listed components); `provenance.prov:used` lists the pinned input sources as DOIP URLs, carrying the applied SQL as `schema:query`.
 
 ### Output
 
@@ -72,6 +83,7 @@ Each model image must:
 - Read input files from `/work/input/` (filenames as specified in `input_data_files`)
 - Read config from `/work/input/config.json`
 - Write all output to `/work/output/`
+- Exit non-zero on failure, printing `ERROR: <message>` — that line is surfaced in the Prefect failure message
 
 The `baseline-nullmodel` specifically expects `/work/input/input.parquet` with columns `Erkrankung`, `Altersgruppe`, `Region`, `Kalenderwoche`, `Inzidenz`.
 
@@ -104,4 +116,24 @@ Override names via `WORK_POOL_NAME` and `DEPLOYMENT_NAME` env vars.
 | `LAKEFS_HOST` | lakeFS server URL |
 | `LAKEFS_ACCESS_KEY` | lakeFS access key |
 | `LAKEFS_SECRET_KEY` | lakeFS secret key |
+| `DOIP_BASE_URL` | Base URL for DOIP links written into the FDO (default `https://doip.episerve.zib.de`) |
+| `DOIP_LAKEFS_REPO` | lakeFS repo backing DOIP objects (default `data-processed`) |
+| `DOIP_LAKEFS_BRANCH` | Branch of that repo (default `main`) |
 | `PREFECT_API_URL` | Prefect server (used by `deploy.py`) |
+| `WORK_POOL_NAME` | Work pool for `deploy.py` (default `kubernetes-pool`) |
+| `DEPLOYMENT_NAME` | Deployment name for `deploy.py` (default `model-runner`) |
+
+Inside the Kubernetes Job the containers use `LAKECTL_SERVER_ENDPOINT_URL` plus `LAKECTL_CREDENTIALS_ACCESS_KEY_ID` / `LAKECTL_CREDENTIALS_SECRET_ACCESS_KEY` from the `lakefs-credentials` Secret.
+
+## Repository layout
+
+```
+flow/run_model.py           mint QID → stage_input → submit_and_wait → write_metadata
+tasks/stage_input.py        resolve source commits, stage config.json + config_prefect.json
+tasks/submit_and_wait.py    build/submit the K8s Job, poll, save run.log
+tasks/write_metadata.py     RO-Crate + FDO
+tools/k8_tools.py           stuck-pod detection, per-container log collection
+tools/lakefs_helpers.py     lakeFS client, repo/branch constants
+tools/sharding.py           QID → sharded path
+lakectl-python/             image for the lakefs-pull init container (Dockerfile + pull.py)
+```
