@@ -202,7 +202,7 @@ def test_stage_input_raises_when_config_upload_fails():
     repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[Exception("permission denied")])
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to stage config.json"):
+        with pytest.raises(RuntimeError, match="Failed to stage config.json.*permission denied"):
             stage_input.fn(
                 input_data_files=SINGLE_INPUT_FILE,
                 config_json=MODEL_CONFIG_JSON,
@@ -215,7 +215,7 @@ def test_stage_input_raises_when_prefect_config_upload_fails():
     repo_factory, _, _, _ = _lakefs_mocks(dst_upload_errors=[None, Exception("permission denied")])
     patches = _stage_patches(repo_factory)
     with patches[0], patches[1]:
-        with pytest.raises(RuntimeError, match="Failed to stage config_prefect.json"):
+        with pytest.raises(RuntimeError, match="Failed to stage config_prefect.json.*permission denied"):
             stage_input.fn(
                 input_data_files=SINGLE_INPUT_FILE,
                 config_json=MODEL_CONFIG_JSON,

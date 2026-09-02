@@ -80,7 +80,7 @@ def stage_input(
         )
         logger.info("config.json staged successfully")
     except Exception as e:
-        raise RuntimeError(f"Failed to stage config.json to {dst_config}") from e
+        raise RuntimeError(f"Failed to stage config.json to {dst_config}: {e}") from e
 
     try:
         payload = json.loads(prefect_payload_json)
@@ -97,6 +97,6 @@ def stage_input(
         )
         logger.info("config_prefect.json staged successfully")
     except Exception as e:
-        raise RuntimeError(f"Failed to stage config_prefect.json to {dst_prefect}") from e
+        raise RuntimeError(f"Failed to stage config_prefect.json to {dst_prefect}: {e}") from e
 
     return versioned_input_data_files
