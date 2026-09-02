@@ -217,9 +217,11 @@ def write_metadata(
         ],
     }, indent=2).encode()
 
+    # pre_sign=False on every upload: the lakefs SDK leaves Content-Type out
+    # of the presigned SigV4 signature and Ceph RGW (Squid) 403s the mismatch.
     branch_handle \
         .object(f"{sharded}/components/ro-crate-metadata.json") \
-        .upload(data=metadata, content_type="application/json")
+        .upload(data=metadata, content_type="application/json", pre_sign=False)
 
     file_entities.append({
         "@id": "components/ro-crate-metadata.json",
@@ -240,6 +242,6 @@ def write_metadata(
     )
     branch_handle \
         .object(f"{sharded}/{qid}.fdo.json") \
-        .upload(data=fdo, content_type="application/json")
+        .upload(data=fdo, content_type="application/json", pre_sign=False)
 
     branch_handle.commit(message=f"add ro-crate metadata for {qid}")

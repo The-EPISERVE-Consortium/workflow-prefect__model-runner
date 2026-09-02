@@ -241,6 +241,23 @@ def test_stage_input_config_uploaded_verbatim():
     assert dst_obj.upload.call_args_list[config_idx].kwargs["data"] == MODEL_CONFIG_JSON.encode()
 
 
+def test_stage_input_uploads_without_presigned_put():
+    """Both config uploads must pass pre_sign=False so the write goes through
+    the lakeFS API, not a presigned PUT that Ceph RGW (Squid) 403s."""
+    repo_factory, _, _, dst_obj = _lakefs_mocks()
+    patches = _stage_patches(repo_factory)
+    with patches[0], patches[1]:
+        stage_input.fn(
+            input_data_files=SINGLE_INPUT_FILE,
+            config_json=MODEL_CONFIG_JSON,
+            prefect_payload_json=PREFECT_PAYLOAD_JSON,
+            qid=QID,
+        )
+    assert dst_obj.upload.call_count == 2
+    for call in dst_obj.upload.call_args_list:
+        assert call.kwargs.get("pre_sign") is False
+
+
 def test_stage_input_prefect_payload_contains_versioned_urls():
     repo_factory, _, dst_branch_mock, dst_obj = _lakefs_mocks()
     patches = _stage_patches(repo_factory)
@@ -285,6 +302,24 @@ def test_job_spec():
     assert pod.init_containers[1].image == f"{MODEL_IMAGE}:{MODEL_TAG}"
     assert pod.containers[0].name == "lakefs-push"
     assert any(v.name == "workdir" for v in pod.volumes)
+
+
+def test_lakefs_push_disables_presigned_upload():
+    """The push container must run `lakectl fs upload --pre-sign=false` so the
+    output write goes via the lakeFS API, not a presigned PUT to Ceph RGW."""
+    batch_v1 = _k8s_batch_mock(succeeded=True)
+    with (
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
+        patch("time.sleep"),
+    ):
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+
+    job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
+    push_script = " ".join(job.spec.template.spec.containers[0].args)
+    assert "lakectl fs upload --pre-sign=false" in push_script
 
 
 def test_job_pull_spec_env():
@@ -335,6 +370,30 @@ def test_job_secret_refs():
         assert ref.name == "lakefs-credentials"
     assert secret_refs["LAKECTL_CREDENTIALS_ACCESS_KEY_ID"].key == "lakefs-access-key"
     assert secret_refs["LAKECTL_CREDENTIALS_SECRET_ACCESS_KEY"].key == "lakefs-secret-key"
+
+
+def test_run_log_uploaded_without_presigned_put():
+    """The run.log upload must pass pre_sign=False (Ceph RGW / Squid 403s the
+    presigned Content-Type signed-header mismatch)."""
+    batch_v1 = _k8s_batch_mock(succeeded=True)
+    obj_mock = MagicMock()
+    branch_mock = MagicMock()
+    branch_mock.object.return_value = obj_mock
+    with (
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs.repository") as mock_repo,
+        patch("time.sleep"),
+    ):
+        mock_repo.return_value.branch.return_value = branch_mock
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+
+    log_upload = next(
+        c for c in obj_mock.upload.call_args_list if c.kwargs.get("content_type") == "text/plain"
+    )
+    assert log_upload.kwargs.get("pre_sign") is False
 
 
 def test_submit_polls_until_succeeded():
@@ -599,6 +658,12 @@ def test_write_metadata_uploads_fdo():
     sharded = shard_qid(QID)
     assert f"{sharded}/components/ro-crate-metadata.json" in uploaded_paths
     assert f"{sharded}/{QID}.fdo.json" in uploaded_paths
+
+    # Both metadata uploads must skip the presigned PUT (Ceph RGW / Squid 403s
+    # the Content-Type signed-header mismatch).
+    assert obj_mock.upload.call_count == 2
+    for call in obj_mock.upload.call_args_list:
+        assert call.kwargs.get("pre_sign") is False
 
     fdo_call = next(c for c in obj_mock.upload.call_args_list if b"fdo:hasComponent" in c.kwargs.get("data", b""))
     fdo = _json.loads(fdo_call.kwargs["data"])

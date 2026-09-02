@@ -76,7 +76,14 @@ def stage_input(
     logger.info(f"Staging config.json -> lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_config}")
     try:
         dst_branch_handle.object(dst_config).upload(
-            data=config_json.encode(), content_type="application/json"
+            data=config_json.encode(),
+            content_type="application/json",
+            # Upload via the lakeFS API, not a presigned PUT: the lakefs SDK
+            # omits Content-Type from the presigned SigV4 signature and Ceph
+            # RGW (Squid) rejects the mismatch with 403 AccessDenied. Same
+            # fix as workflow-prefect__dataset-downloader; applied to every
+            # SDK upload in this repo.
+            pre_sign=False,
         )
         logger.info("config.json staged successfully")
     except Exception as e:
@@ -93,7 +100,9 @@ def stage_input(
     logger.info(f"Staging config_prefect.json -> lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{dst_prefect}")
     try:
         dst_branch_handle.object(dst_prefect).upload(
-            data=prefect_payload_json.encode(), content_type="application/json"
+            data=prefect_payload_json.encode(),
+            content_type="application/json",
+            pre_sign=False,  # see the config.json upload above
         )
         logger.info("config_prefect.json staged successfully")
     except Exception as e:

@@ -102,7 +102,11 @@ def submit_and_wait(
                             image="treeverse/lakectl:latest",
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"lakectl fs upload --source /work/output -r {lakefs_run_path}/components/output/ && "
+                                # --pre-sign=false: push through the lakeFS API, not a
+                                # presigned PUT to Ceph RGW (Squid), which 403s on the
+                                # Content-Type signed-header mismatch. Matches the
+                                # pre_sign=False on the Python SDK uploads.
+                                f"lakectl fs upload --pre-sign=false --source /work/output -r {lakefs_run_path}/components/output/ && "
                                 f"lakectl commit lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH} -m 'model run {run_id}'"
                             ],
                             env=lakefs_env,
@@ -144,7 +148,7 @@ def submit_and_wait(
         lakefs.repository(LAKEFS_RUN_REPO, client=lc) \
             .branch(LAKEFS_BRANCH) \
             .object(log_path) \
-            .upload(data=pod_logs.encode(), content_type="text/plain")
+            .upload(data=pod_logs.encode(), content_type="text/plain", pre_sign=False)
         logger.info(f"Pod logs saved to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{log_path}")
     except Exception as e:
         logger.warning(f"Could not save pod logs to LakeFS: {e}")
