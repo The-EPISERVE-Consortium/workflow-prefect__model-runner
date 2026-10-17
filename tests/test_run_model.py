@@ -777,3 +777,13 @@ def test_model_pipeline_passes_executed_by_on_to_the_metadata():
                           model_tag=MODEL_TAG, executed_by="episerve_user_7")
     assert write.call_args.kwargs["executed_by"] == "episerve_user_7"
 
+
+def test_a_lakefs_input_that_is_no_dataset_component_keeps_its_commit_in_the_provenance():
+    uri = "lakefs://benchmarks/main/12/input.parquet"
+    commit = "ee" * 32
+    fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
+                                 input_data_files=[[f"{uri}?version={commit}", "input.parquet"]],
+                                 data_transformation_sql=[""]))
+    used = fdo["provenance"]["prov:used"]
+    assert used == [{"@id": f"{uri}?version={commit}", "@type": "prov:Entity"}]     # no SQL entry for an empty SQL
+

@@ -40,7 +40,8 @@ def _lakefs_uri_to_doip_url(src_uri: str, commit_id: str | None = None) -> str:
         elif after_components:
             component_parts.append(part)
     if not qid or not component_parts:
-        return src_uri
+        # not a dataset component (e.g. a benchmark's generated input file): keep the lakeFS URI, with its commit
+        return f"{src_uri}?version={commit_id}" if commit_id else src_uri
     component = "/".join(component_parts)
     url = f"{DOIP_BASE_URL}/doip/retrieve/{qid}/{component}"
     if commit_id:
