@@ -13,6 +13,17 @@ from tools.sharding import shard_qid
 
 DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
 
+# Who started a run is recorded only as this pseudonym, ``episerve_user_<id>``: the id is the user's id in the
+# EPISERVE user table, which only an administrator can resolve. No name or email ever goes into the metadata.
+_STARTED_BY = re.compile(r"^episerve_user_\d{1,9}$")
+
+
+def started_by_agent(started_by: str | None) -> dict:
+    """The provenance entry for the person who started the run; empty for a missing or malformed value."""
+    if started_by and _STARTED_BY.fullmatch(started_by):
+        return {"schema:agent": {"@id": started_by, "@type": "prov:Person"}}
+    return {}
+
 
 def _lakefs_uri_to_doip_url(src_uri: str, commit_id: str | None = None) -> str:
     """Convert a lakefs:// URI to a DOIP retrieve URL, appending ?version= when a commit ID is known."""
@@ -52,6 +63,7 @@ def _build_fdo(
     file_entities: list,
     input_data_files: list[list[str]] | None = None,
     data_transformation_sql: list[str] | None = None,
+    started_by: str | None = None,
 ) -> bytes:
     model_name = model_image.split("/")[-1]
     components = []
@@ -123,6 +135,7 @@ def _build_fdo(
                 "schema:url": model_image,
             },
             "prov:used": prov_used,
+            **started_by_agent(started_by),
         },
     }, indent=2).encode()
 
@@ -136,6 +149,7 @@ def write_metadata(
     status: str,
     input_data_files: list[list[str]],
     data_transformation_sql: list[str] | None = None,
+    started_by: str | None = None,
 ):
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     end_time = run_start + timedelta(seconds=computation_time)
@@ -239,6 +253,7 @@ def write_metadata(
         file_entities=file_entities,
         input_data_files=input_data_files,
         data_transformation_sql=data_transformation_sql,
+        started_by=started_by,
     )
     branch_handle \
         .object(f"{sharded}/{qid}.fdo.json") \

@@ -25,6 +25,7 @@ def model_pipeline(
     model_tag: str = "latest",
     namespace: str = "default",
     data_transformation_sql: list[str] | None = None,
+    started_by: str | None = None,
 ):
     """
     Run a model container on Kubernetes, reading input from LakeFS and
@@ -41,6 +42,8 @@ def model_pipeline(
         namespace:    Kubernetes namespace
         data_transformation_sql: Optional per-file SQL filter applied before staging,
                                  parallel list to input_data_files
+        started_by: Optional pseudonym of the person who started the run, ``episerve_user_<id>`` (recorded in the
+                    run's provenance; anything else is ignored)
     """
     model_image = model_image.strip()
     model_tag = model_tag.strip() or "latest"
@@ -78,6 +81,7 @@ def model_pipeline(
             status=status,
             input_data_files=versioned_input_data_files,
             data_transformation_sql=data_transformation_sql,
+            started_by=started_by,
         )
 
     return f"lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{shard_qid(qid)}/components/output/"
