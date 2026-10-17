@@ -22,7 +22,7 @@ Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes.
 The `lakefs-pull` init container (`lakectl-python/pull.py`) understands exactly two forms; anything else fails with `Unsupported source URI scheme`:
 
 - `lakefs://<repo>/<branch>/<path>` — rewritten to `lakefs://<repo>/<commit_id>/<path>` using the commit pinned by `stage_input`
-- `https://…/doip/retrieve/<QID>/<component>` — converted to a lakeFS URI in `DOIP_LAKEFS_REPO` (default `data-processed`) at the pinned commit. A DOIP URL with no resolved `?version=` commit is rejected.
+- `https://…/doip/retrieve/<QID>/<component>` — converted to a lakeFS URI at the pinned commit; the repositories are tried in order (`DOIP_LAKEFS_REPOS`, default `data-processed` then `benchmarks`, since a commit ID exists in one repository only). A DOIP URL with no resolved `?version=` commit is rejected.
 
 Plain HTTP(S) URLs are not supported.
 
@@ -118,6 +118,7 @@ Override names via `WORK_POOL_NAME` and `DEPLOYMENT_NAME` env vars.
 | `LAKEFS_SECRET_KEY` | lakeFS secret key |
 | `DOIP_BASE_URL` | Base URL for DOIP links written into the FDO (default `https://doip.episerve.zib.de`) |
 | `DOIP_LAKEFS_REPO` | lakeFS repo backing DOIP objects (default `data-processed`) |
+| `DOIP_LAKEFS_REPOS` | comma-separated repos tried by the pull step for DOIP URLs (default: `DOIP_LAKEFS_REPO`, then `benchmarks`) |
 | `DOIP_LAKEFS_BRANCH` | Branch of that repo (default `main`) |
 | `PREFECT_API_URL` | Prefect server (used by `deploy.py`) |
 | `WORK_POOL_NAME` | Work pool for `deploy.py` (default `kubernetes-pool`) |

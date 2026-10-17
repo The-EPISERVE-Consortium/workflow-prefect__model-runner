@@ -38,6 +38,29 @@ def _lakefs_versioned_to_ref(src_uri: str) -> str:
     return f"lakefs://{repo}/{commit_id}/{path}"
 
 
+def _doip_repos() -> list[str]:
+    """The lakeFS repositories DOIP objects can live in, in the order they are tried.
+
+    ``DOIP_LAKEFS_REPOS`` (comma separated) wins; otherwise ``DOIP_LAKEFS_REPO`` first, then ``benchmarks``.
+    """
+    configured = os.environ.get("DOIP_LAKEFS_REPOS")
+    if configured:
+        return [repo.strip() for repo in configured.split(",") if repo.strip()]
+    first = os.environ.get("DOIP_LAKEFS_REPO", "data-processed")
+    return [first] + [repo for repo in ("benchmarks",) if repo != first]
+
+
+def _doip_to_lakefs_uris(src_uri: str) -> list[str]:
+    """Candidate lakeFS URIs of a DOIP retrieve URL, one per repository (a commit ID exists in one repository only)."""
+    m = re.match(r".*/doip/retrieve/([^/?]+)/(.+?)(?:\?version=(.+))?$", src_uri)
+    if not m:
+        raise ValueError(f"Cannot parse DOIP URL: {src_uri}")
+    qid, component_path, commit_id = m.group(1), m.group(2), m.group(3)
+    if not commit_id:
+        raise ValueError(f"DOIP URL has no ?version= commit ID: {src_uri}")
+    return [f"lakefs://{repo}/{commit_id}/{_shard_qid(qid)}/components/{component_path}" for repo in _doip_repos()]
+
+
 def _doip_to_lakefs_uri(src_uri: str) -> str:
     """Convert a DOIP retrieve URL to a lakeFS URI using the embedded ?version= commit ID."""
     m = re.match(r".*/doip/retrieve/([^/?]+)/(.+?)(?:\?version=(.+))?$", src_uri)
@@ -53,15 +76,21 @@ def _doip_to_lakefs_uri(src_uri: str) -> str:
 def download(src_uri: str, filename: str) -> None:
     out_path = os.path.join(WORK_INPUT, filename)
     if src_uri.startswith("lakefs://"):
-        lakectl_uri = _lakefs_versioned_to_ref(src_uri)
+        candidates = [_lakefs_versioned_to_ref(src_uri)]
     elif "/doip/retrieve/" in src_uri:
-        lakectl_uri = _doip_to_lakefs_uri(src_uri)
+        candidates = _doip_to_lakefs_uris(src_uri)
     else:
         raise ValueError(f"Unsupported source URI scheme: {src_uri}")
     print(f"[pull] downloading {filename}")
     print(f"[pull]   src : {src_uri}")
-    print(f"[pull]   ref : {lakectl_uri}")
-    subprocess.run(["lakectl", "fs", "download", lakectl_uri, out_path], check=True)
+    for i, lakectl_uri in enumerate(candidates):
+        print(f"[pull]   ref : {lakectl_uri}")
+        try:
+            subprocess.run(["lakectl", "fs", "download", lakectl_uri, out_path], check=True)
+            break
+        except subprocess.CalledProcessError:
+            if i == len(candidates) - 1:
+                raise
     size = os.path.getsize(out_path)
     print(f"[pull] {filename} done ({size:,} bytes)")
 
