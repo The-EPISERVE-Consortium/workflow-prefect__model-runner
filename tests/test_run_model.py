@@ -8,7 +8,7 @@ import pytest
 from flow.run_model import mint_qid, model_pipeline
 from tasks.stage_input import stage_input
 from tasks.submit_and_wait import submit_and_wait, LAKECTL_PYTHON_IMAGE
-from tasks.write_metadata import write_metadata, _build_fdo, mint_model_qid, started_by_agent
+from tasks.write_metadata import write_metadata, _build_fdo, mint_model_qid, executed_by_agent
 from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
 
@@ -750,30 +750,30 @@ def test_mint_model_qid_format():
     assert re.match(r"^Q\d{13}$", qid)
 
 
-# ── who started the run ───────────────────────────────────────────────────────
+# ── who executed the run ───────────────────────────────────────────────────────
 
-def test_the_provenance_names_the_starter_only_by_the_pseudonym():
+def test_the_provenance_names_the_executor_only_by_the_pseudonym():
     fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
-                                 started_by="episerve_user_18"))
+                                 executed_by="episerve_user_18"))
     assert fdo["provenance"]["schema:agent"] == {"@id": "episerve_user_18", "@type": "prov:Person"}
     assert fdo["provenance"]["prov:wasAssociatedWith"]["@type"] == "prov:SoftwareAgent"   # the software stays as it was
 
 
-def test_a_missing_or_malformed_starter_is_left_out():
+def test_a_missing_or_malformed_executor_is_left_out():
     for value in (None, "", "tim@example.org", "Tim Conrad", "episerve_user_", "episerve_user_1x", "episerve_user_1234567890"):
-        assert started_by_agent(value) == {}
+        assert executed_by_agent(value) == {}
         fdo = _json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
-                                     started_by=value))
+                                     executed_by=value))
         assert "schema:agent" not in fdo["provenance"]
 
 
-def test_model_pipeline_passes_started_by_on_to_the_metadata():
+def test_model_pipeline_passes_executed_by_on_to_the_metadata():
     with (
         patch("flow.run_model.stage_input", return_value=INPUT_DATA_FILES),
         patch("flow.run_model.submit_and_wait"),
         patch("flow.run_model.write_metadata") as write,
     ):
         model_pipeline.fn(input_data_files=INPUT_DATA_FILES, model_image=MODEL_IMAGE, config_json=MODEL_CONFIG_JSON,
-                          model_tag=MODEL_TAG, started_by="episerve_user_7")
-    assert write.call_args.kwargs["started_by"] == "episerve_user_7"
+                          model_tag=MODEL_TAG, executed_by="episerve_user_7")
+    assert write.call_args.kwargs["executed_by"] == "episerve_user_7"
 
