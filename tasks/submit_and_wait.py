@@ -66,6 +66,12 @@ def submit_and_wait(
         ),
         client.V1EnvVar(name="PULL_SPEC", value=json.dumps(pull_spec)),
     ]
+    # pull.py reads these to map DOIP URLs to lakeFS repositories; pass on what the flow has set.
+    pull_env = lakefs_env + [
+        client.V1EnvVar(name=name, value=os.environ[name])
+        for name in ("DOIP_LAKEFS_REPO", "DOIP_LAKEFS_REPOS")
+        if os.environ.get(name)
+    ]
 
     workdir_mount = client.V1VolumeMount(name="workdir", mount_path="/work")
 
@@ -87,7 +93,7 @@ def submit_and_wait(
                                 f"lakectl fs download {lakefs_run_path}/components/input/config.json /work/input/config.json && "
                                 f"python3 /usr/local/bin/pull.py"
                             ],
-                            env=lakefs_env,
+                            env=pull_env,
                             volume_mounts=[workdir_mount],
                         ),
                         client.V1Container(
@@ -129,6 +135,7 @@ def submit_and_wait(
     logger.info("Job submitted, waiting for completion...")
 
     failed = False
+    stuck_error = None
     while True:
         status = batch_v1.read_namespaced_job(name=run_id, namespace=namespace).status
         if status.succeeded:
@@ -137,10 +144,16 @@ def submit_and_wait(
         if status.failed:
             failed = True
             break
-        _check_for_stuck_pods(core_v1, run_id, namespace)
+        try:
+            _check_for_stuck_pods(core_v1, run_id, namespace)
+        except RuntimeError as e:
+            stuck_error = e
+            break
         time.sleep(5)
 
     pod_logs = _collect_pod_logs(core_v1, run_id, namespace)
+    if stuck_error:
+        pod_logs = f"ERROR: {stuck_error}\n\n{pod_logs}"
 
     log_path = f"{shard_qid(qid)}/components/output/run.log"
     try:
@@ -152,6 +165,17 @@ def submit_and_wait(
         logger.info(f"Pod logs saved to lakefs://{LAKEFS_RUN_REPO}/{LAKEFS_BRANCH}/{log_path}")
     except Exception as e:
         logger.warning(f"Could not save pod logs to LakeFS: {e}")
+
+    if stuck_error:
+        # A stuck pod never finishes, so the Job's TTL never starts: delete it here.
+        try:
+            batch_v1.delete_namespaced_job(
+                name=run_id, namespace=namespace, propagation_policy="Background"
+            )
+            logger.info(f"Deleted stuck Job {run_id}")
+        except Exception as e:
+            logger.warning(f"Could not delete stuck Job {run_id}: {e}")
+        raise stuck_error
 
     if failed:
         logger.error("Pod logs:\n%s", pod_logs)

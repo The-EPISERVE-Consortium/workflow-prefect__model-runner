@@ -424,14 +424,48 @@ def test_submit_raises_on_stuck_image():
         MagicMock(status=MagicMock(init_container_statuses=[cs], container_statuses=[]))
     ]
 
+    obj_mock = MagicMock()
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
         patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
         patch("tasks.submit_and_wait.client.CoreV1Api", return_value=core_v1),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs.repository") as mock_repo,
         patch("time.sleep"),
     ):
+        mock_repo.return_value.branch.return_value.object.return_value = obj_mock
         with pytest.raises(RuntimeError, match="InvalidImageName"):
             submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+
+    # run.log is still saved, with the reason first
+    log_upload = next(
+        c for c in obj_mock.upload.call_args_list if c.kwargs.get("content_type") == "text/plain"
+    )
+    assert log_upload.kwargs["data"].decode().startswith("ERROR: Container 'model' cannot start: InvalidImageName")
+    # the stuck Job never finishes (no TTL), so it is deleted
+    batch_v1.delete_namespaced_job.assert_called_once()
+    assert batch_v1.delete_namespaced_job.call_args.kwargs["name"] == RUN_ID
+
+
+def test_job_pull_container_gets_doip_repo_env(monkeypatch):
+    monkeypatch.setenv("DOIP_LAKEFS_REPOS", "data-processed,benchmarks,other")
+    monkeypatch.delenv("DOIP_LAKEFS_REPO", raising=False)
+    batch_v1 = _k8s_batch_mock(succeeded=True)
+    with (
+        patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
+        patch("tasks.submit_and_wait.client.BatchV1Api", return_value=batch_v1),
+        patch("tasks.submit_and_wait.client.CoreV1Api", return_value=MagicMock()),
+        patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
+        patch("time.sleep"),
+    ):
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+
+    job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
+    pull_env = {e.name: e.value for e in job.spec.template.spec.init_containers[0].env if e.value}
+    assert pull_env["DOIP_LAKEFS_REPOS"] == "data-processed,benchmarks,other"
+    assert "DOIP_LAKEFS_REPO" not in pull_env
+    push_env = {e.name for e in job.spec.template.spec.containers[0].env}
+    assert "DOIP_LAKEFS_REPOS" not in push_env
 
 
 def test_submit_raises_on_failure():

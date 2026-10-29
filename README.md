@@ -61,13 +61,13 @@ Plain HTTP(S) URLs are not supported.
    | `model` | init | `<model_image>:<model_tag>` | Reads `/work/input/`, writes `/work/output/` |
    | `lakefs-push` | main | `treeverse/lakectl:latest` | Uploads `/work/output/` → `components/output/` and commits |
 
-   Polls every 5 s until the Job succeeds or fails. Fails fast on `ImagePullBackOff` / `ErrImagePull` / `InvalidImageName`.
+   Polls every 5 s until the Job succeeds or fails. Fails fast on `ImagePullBackOff` / `ErrImagePull` / `InvalidImageName`: the Job is then deleted (it would never finish on its own) and `run.log` starts with the reason. The Job has `backoff_limit=0`; a finished Job is removed by Kubernetes after 10 minutes.
 
-   Whatever the outcome, the per-container pod logs are uploaded to `components/output/run.log`. On failure the first log line starting with `ERROR:` is appended to the raised `RuntimeError`, so the model's own message is visible in the Prefect UI.
+   Whatever the outcome, the per-container pod logs (last 200 lines of each container) are uploaded to `components/output/run.log`. On failure the first log line starting with `ERROR:` is appended to the raised `RuntimeError`, so the model's own message is visible in the Prefect UI.
 
-4. **`write_metadata`** (always runs, even on failure) — Scans `components/input/` (plus `components/output/` on success) in lakeFS, then writes:
+4. **`write_metadata`** (runs whether the Job succeeded or failed; not when `stage_input` itself fails) — Scans `components/input/` (plus `components/output/` on success) in lakeFS, then writes:
    - `components/ro-crate-metadata.json` — RO-Crate 1.1 + Workflow Run Process 0.4 record. The model is referenced as a `SoftwareApplication` under a model QID derived from `sha256(model_image)`, stable across runs of the same image.
-   - `<QID>.fdo.json` — FAIR Digital Object descriptor. `kernel.fdo:hasComponent` lists every file with its MIME type (the DOIP server only serves listed components); `provenance.prov:used` lists the pinned input sources as DOIP URLs, carrying the applied SQL as `schema:query`.
+   - `<QID>.fdo.json` — FAIR Digital Object descriptor. `kernel.fdo:hasComponent` lists every scanned file with its MIME type (the DOIP server only serves listed components; on a failed run `components/output/`, including `run.log`, is not listed). `provenance.prov:used` lists the pinned input sources, carrying the applied SQL as `schema:query`: a `lakefs://` input under `<QID>/components/` becomes a DOIP retrieve URL with `?version=<commit>`, any other `lakefs://` input (e.g. a benchmark's generated input file) keeps its lakeFS URI with `?version=<commit>`, and a DOIP URL input is kept as given.
 
 ### Output
 
@@ -118,7 +118,7 @@ Override names via `WORK_POOL_NAME` and `DEPLOYMENT_NAME` env vars.
 | `LAKEFS_SECRET_KEY` | lakeFS secret key |
 | `DOIP_BASE_URL` | Base URL for DOIP links written into the FDO (default `https://doip.episerve.zib.de`) |
 | `DOIP_LAKEFS_REPO` | lakeFS repo backing DOIP objects (default `data-processed`) |
-| `DOIP_LAKEFS_REPOS` | comma-separated repos tried by the pull step for DOIP URLs (default: `DOIP_LAKEFS_REPO`, then `benchmarks`) |
+| `DOIP_LAKEFS_REPOS` | comma-separated repos tried by the pull step for DOIP URLs (default: `DOIP_LAKEFS_REPO`, then `benchmarks`). This and `DOIP_LAKEFS_REPO` are passed on to the `lakefs-pull` container when set |
 | `DOIP_LAKEFS_BRANCH` | Branch of that repo (default `main`) |
 | `PREFECT_API_URL` | Prefect server (used by `deploy.py`) |
 | `WORK_POOL_NAME` | Work pool for `deploy.py` (default `kubernetes-pool`) |
