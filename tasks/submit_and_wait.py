@@ -14,6 +14,15 @@ from tools.sharding import shard_qid
 
 LAKECTL_PYTHON_IMAGE = "ghcr.io/the-episerve-consortium/lakectl-python:latest"
 
+# A supplementary group shared by this job's containers, independent of their
+# image-defined user and primary group. Only the job's emptyDir is shared.
+WORKDIR_GROUP = 2000
+PREPARE_WORKDIR_COMMAND = (
+    "umask 0002 && mkdir -p /work/input /work/output && "
+    f"chgrp {WORKDIR_GROUP} /work/input /work/output && "
+    "chmod 2770 /work/input /work/output"
+)
+
 
 @task
 def submit_and_wait(
@@ -47,6 +56,9 @@ def submit_and_wait(
       init: lakefs-pull  → downloads qid/input/ from LakeFS → /work/input/
       init: model        → reads /work/input/, writes /work/output/
       container: lakefs-push → uploads /work/output/ → LakeFS qid/output/
+
+    The temporary working volume uses a shared supplementary group and
+    group-writable directories. Each image retains its configured user.
     """
     pinned_image = image_reference(model_image, model_digest)
     logger = get_run_logger()
@@ -100,13 +112,14 @@ def submit_and_wait(
             template=client.V1PodTemplateSpec(
                 spec=client.V1PodSpec(
                     restart_policy="Never",
+                    security_context=client.V1PodSecurityContext(fs_group=WORKDIR_GROUP),
                     init_containers=[
                         client.V1Container(
                             name="lakefs-pull",
                             image=LAKECTL_PYTHON_IMAGE,
                             command=["/bin/sh", "-c"],
                             args=[
-                                f"mkdir -p /work/input /work/output && "
+                                f"{PREPARE_WORKDIR_COMMAND} && "
                                 f"lakectl fs download {lakefs_run_path}/components/input/config.json /work/input/config.json && "
                                 f"python3 /usr/local/bin/pull.py"
                             ],

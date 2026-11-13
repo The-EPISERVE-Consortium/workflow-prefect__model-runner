@@ -7,7 +7,7 @@ import pytest
 
 from flow.run_model import mint_qid, model_pipeline
 from tasks.stage_input import stage_input
-from tasks.submit_and_wait import submit_and_wait, LAKECTL_PYTHON_IMAGE
+from tasks.submit_and_wait import submit_and_wait, LAKECTL_PYTHON_IMAGE, WORKDIR_GROUP, PREPARE_WORKDIR_COMMAND
 from tasks.write_metadata import write_metadata, _build_fdo, mint_model_qid, executed_by_agent
 from tools.lakefs_helpers import LAKEFS_DATA_REPO, LAKEFS_RUN_REPO, LAKEFS_BRANCH
 from tools.sharding import shard_qid
@@ -298,6 +298,7 @@ def test_stage_input_prefect_payload_contains_versioned_urls():
 # ── submit_and_wait ───────────────────────────────────────────────────────────
 
 def test_job_spec():
+    """The job pins the model and shares temporary files across image users."""
     batch_v1 = _k8s_batch_mock(succeeded=True)
     with (
         patch("tasks.submit_and_wait.k8s_config.load_incluster_config"),
@@ -320,6 +321,16 @@ def test_job_spec():
     assert pod.init_containers[1].image == f"{MODEL_IMAGE}@{MODEL_DIGEST}"
     assert pod.containers[0].name == "lakefs-push"
     assert any(v.name == "workdir" for v in pod.volumes)
+    assert pod.security_context.fs_group == WORKDIR_GROUP == 2000
+    assert pod.security_context.run_as_user is None
+    assert pod.security_context.run_as_group is None
+    assert pod.init_containers[1].security_context is None
+    volume = next(v for v in pod.volumes if v.name == "workdir")
+    assert volume.empty_dir is not None
+    assert volume.host_path is None and volume.persistent_volume_claim is None
+    setup = pod.init_containers[0].args[0]
+    assert setup.startswith(PREPARE_WORKDIR_COMMAND + " && ")
+    assert setup.index("chmod 2770") < setup.index("lakectl fs download")
 
 
 def test_lakefs_push_disables_presigned_upload():

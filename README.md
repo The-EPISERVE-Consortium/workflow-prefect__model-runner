@@ -122,6 +122,22 @@ The flow returns the lakeFS path to the output directory:
 lakefs://model-runs/main/<pp>/<qq>/<rr>/<QID>/components/output/
 ```
 
+### Working-directory permissions
+
+Each job has its own temporary `emptyDir` mounted at `/work`. The Pod adds
+supplementary group `2000` using `fsGroup`; it preserves each image's configured
+user and primary group. Before downloading files, the pull container creates
+`/work/input` and `/work/output`, sets their group to `2000`, and applies mode
+`2770` (owner/group access and setgid directory inheritance). Its `umask 0002`
+makes newly downloaded files group-readable and writable.
+
+This allows root and non-root model images to read inputs and create outputs
+without Dockerfile changes. A model that drops supplementary groups or applies
+more restrictive permissions can still need its own adjustments. `fsGroup`
+applies to supported volumes throughout the Pod; review its effect if adding
+persistent or shared mounts. The current working volume is isolated per job
+and removed when its Pod is deleted.
+
 ### Model container contract
 
 Each model image must:
