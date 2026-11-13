@@ -9,6 +9,7 @@ from prefect.logging import get_run_logger
 import lakefs
 from tools.k8_tools import _check_for_stuck_pods, _collect_pod_logs
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
+from tools.model_images import image_reference
 from tools.sharding import shard_qid
 
 LAKECTL_PYTHON_IMAGE = "ghcr.io/the-episerve-consortium/lakectl-python:latest"
@@ -23,15 +24,31 @@ def submit_and_wait(
     namespace: str = "default",
     input_data_files: list[list[str]] | None = None,
     data_transformation_sql: list[str] | None = None,
+    model_digest: str | None = None,
 ):
     """
     Submit a Kubernetes Job with the three-container pattern and wait for completion.
+
+    Args:
+        run_id: Kubernetes job name.
+        model_image: Model image repository.
+        model_tag: Requested tag, retained for provenance compatibility.
+        qid: Run identifier.
+        namespace: Kubernetes namespace.
+        input_data_files: Versioned source URLs and target filenames.
+        data_transformation_sql: Optional SQL for each input file.
+        model_digest: Required resolved SHA-256 model digest.
+
+    Raises:
+        ValueError: If no valid model digest is provided.
+        RuntimeError: If the job fails or cannot start.
 
     Pod structure:
       init: lakefs-pull  → downloads qid/input/ from LakeFS → /work/input/
       init: model        → reads /work/input/, writes /work/output/
       container: lakefs-push → uploads /work/output/ → LakeFS qid/output/
     """
+    pinned_image = image_reference(model_image, model_digest)
     logger = get_run_logger()
 
     k8s_config.load_incluster_config()
@@ -98,7 +115,7 @@ def submit_and_wait(
                         ),
                         client.V1Container(
                             name="model",
-                            image=f"{model_image}:{model_tag}",
+                            image=pinned_image,
                             volume_mounts=[workdir_mount],
                         ),
                     ],

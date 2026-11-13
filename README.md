@@ -1,6 +1,6 @@
 # workflow-prefect__model-runner
 
-Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes. It pins each input source to a lakeFS commit, stages the run config in lakeFS, submits a Kubernetes Job using a three-container pattern (pull → model → push), writes RO-Crate + FDO provenance metadata, and returns the lakeFS path to the output.
+Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes. It pins the model container to a GHCR digest and each input source to a lakeFS commit, stages the run config in lakeFS, submits a Kubernetes Job using a three-container pattern (pull → model → push), writes RO-Crate + FDO provenance metadata, and returns the lakeFS path to the output.
 
 ## Flow: `model_pipeline`
 
@@ -11,11 +11,56 @@ Prefect 3 flow that orchestrates epidemiological model containers on Kubernetes.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `input_data_files` | `list[[uri, filename]]` | *(required)* | List of `[source_uri, target_filename]` pairs. The source URI is either `lakefs://<repo>/<branch>/<path>` or a DOIP retrieve URL — see [Supported input URIs](#supported-input-uris). The target filename is what the model container sees under `/work/input/`. |
-| `model_image` | `str` | *(required)* | Full GHCR image name, e.g. `ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel` |
+| `model_image` | `str` | *(required)* | GHCR image repository, optionally with `@sha256:<digest>`, e.g. `ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel` |
 | `config_json` | `str` | *(required)* | JSON string written verbatim as `/work/input/config.json`, e.g. `{"horizon_weeks": 4, "n_reference_weeks": 4}` |
-| `model_tag` | `str` | `latest` | Image tag |
+| `model_tag` | `str` | `latest` | Image tag resolved once before staging; blank means `latest`. Ignored when a digest is supplied. |
+| `model_digest` | `str \| null` | `null` | Exact `sha256:<64 hex digits>` image digest for a pinned run; takes precedence over the tag. |
+| `model_source_revision` | `str \| null` | `null` | Recorded source Git SHA. Accepted for replaying saved parameters, but always refreshed from the resolved image; callers cannot override provenance. |
 | `namespace` | `str` | `default` | Kubernetes namespace in which the Job is created |
 | `data_transformation_sql` | `list[str] \| null` | `null` | Optional per-file SQL filter applied in the pull container after download (runs against a DuckDB table called `df`), parallel list to `input_data_files` |
+
+### Model versions and reruns
+
+With only `model_image` supplied, the flow resolves its `latest` tag to an exact
+image digest before staging inputs. A version tag such as `v1.0.0` works the same
+way. Kubernetes always executes `<model_image>@<model_digest>`; a failed lookup
+stops the run before staging or submitting a job.
+
+To rerun an exact model snapshot, supply either:
+
+```json
+{
+  "model_image": "ghcr.io/the-episerve-consortium/model__prediction__generic__timesfm",
+  "model_digest": "sha256:<64 hex digits copied from a previous run>"
+}
+```
+
+or set `model_image` to that repository followed by `@sha256:<digest>`. An
+embedded digest and `model_digest` must agree if both are supplied. Continue to
+supply the input files and model configuration as usual. The tag is never
+looked up for a digest-based run, though registry access is still required to
+verify the image and read its metadata.
+
+`components/input/config_prefect.json` saves all effective flow parameters,
+including `model_digest`, `model_source_revision`, configuration, SQL and
+versioned input URLs. Its contents can be used as the parameters of a new run.
+The source revision is read from `org.opencontainers.image.revision` in the
+pinned image configuration, never from the current source branch or tag.
+For indexes, all runnable platform images must agree on the source revision;
+attestation manifests are ignored. Missing, invalid or inconsistent source
+labels are recorded as `null` in the saved parameters and `unavailable` in
+provenance, while the image remains pinned by digest.
+
+The image digest is the executed software version in both RO-Crate and FDO.
+Their model entities also include `additionalProperty` entries named
+`model_tag`, `model_digest`, and `model_source_revision` (with `schema:` prefixes
+in FDO). RO-Crate retains the stable model QID and adds the immutable image
+reference as `sameAs`; the FDO software agent uses that image reference as its ID.
+
+Referenced images must remain available in GHCR. The digest covers the image
+contents; weights downloaded at runtime must be pinned separately in the model
+code. Helper container images are unchanged. Identical predictions also depend
+on deterministic model execution and compatible hardware.
 
 ### Supported input URIs
 
@@ -49,23 +94,23 @@ Plain HTTP(S) URLs are not supported.
 
 ### What it does
 
-1. **Mints a QID** of the form `Q<unix-timestamp><3-digit-random>`, e.g. `Q1748526042817`. Used as the run identifier and sharded into `pp/qq/rr/QID` paths in lakeFS.
+1. **Resolves the model image** to a verified GHCR digest and reads its source Git revision label. Then **mints a QID** of the form `Q<unix-timestamp><3-digit-random>`, e.g. `Q1748526042817`. Used as the run identifier and sharded into `pp/qq/rr/QID` paths in lakeFS.
 
-2. **`stage_input`** — Does not move any data. Resolves the source commit for each input (branch HEAD for `lakefs://` URIs, the `DOIP_LAKEFS_REPO`/`DOIP_LAKEFS_BRANCH` HEAD for DOIP URLs) and appends `?version=<commit_id>` to the URI, so the Job fetches exactly that commit rather than whatever HEAD is when the pod starts. Uploads `config.json` (verbatim) and `config_prefect.json` (the full Prefect flow run parameters, with the versioned URIs substituted in) to `model-runs/main/<pp>/<qq>/<rr>/<QID>/components/input/`, and returns the versioned `input_data_files`.
+2. **`stage_input`** — Does not move any data. Resolves the source commit for each input (branch HEAD for `lakefs://` URIs, the `DOIP_LAKEFS_REPO`/`DOIP_LAKEFS_BRANCH` HEAD for DOIP URLs) and appends `?version=<commit_id>` to the URI, so the Job fetches exactly that commit rather than whatever HEAD is when the pod starts. Uploads `config.json` (verbatim) and `config_prefect.json` (the effective flow parameters, including the model digest and source revision, with the versioned URIs substituted in) to `model-runs/main/<pp>/<qq>/<rr>/<QID>/components/input/`, and returns the versioned `input_data_files`.
 
 3. **`submit_and_wait`** — Submits a Kubernetes Job named `model-runner-<qid>` (lowercase) with three containers sharing an ephemeral `/work` volume:
 
    | Container | Type | Image | What it does |
    |---|---|---|---|
    | `lakefs-pull` | init | `ghcr.io/the-episerve-consortium/lakectl-python:latest` | Downloads `config.json`, then runs `pull.py` over the `PULL_SPEC` env var: fetches each pinned source file to `/work/input/<target_filename>` and applies its DuckDB SQL filter in place |
-   | `model` | init | `<model_image>:<model_tag>` | Reads `/work/input/`, writes `/work/output/` |
+   | `model` | init | `<model_image>@<model_digest>` | Reads `/work/input/`, writes `/work/output/` |
    | `lakefs-push` | main | `treeverse/lakectl:latest` | Uploads `/work/output/` → `components/output/` and commits |
 
    Polls every 5 s until the Job succeeds or fails. Fails fast on `ImagePullBackOff` / `ErrImagePull` / `InvalidImageName`: the Job is then deleted (it would never finish on its own) and `run.log` starts with the reason. The Job has `backoff_limit=0`; a finished Job is removed by Kubernetes after 10 minutes.
 
    Whatever the outcome, the per-container pod logs (last 200 lines of each container) are uploaded to `components/output/run.log`. On failure the first log line starting with `ERROR:` is appended to the raised `RuntimeError`, so the model's own message is visible in the Prefect UI.
 
-4. **`write_metadata`** (runs whether the Job succeeded or failed; not when `stage_input` itself fails) — Scans `components/input/` (plus `components/output/` on success) in lakeFS, then writes:
+4. **`write_metadata`** (runs whether the Job succeeded or failed; not when image resolution or `stage_input` fails) — Scans `components/input/` (plus `components/output/` on success) in lakeFS, then writes:
    - `components/ro-crate-metadata.json` — RO-Crate 1.1 + Workflow Run Process 0.4 record. The model is referenced as a `SoftwareApplication` under a model QID derived from `sha256(model_image)`, stable across runs of the same image.
    - `<QID>.fdo.json` — FAIR Digital Object descriptor. `kernel.fdo:hasComponent` lists every scanned file with its MIME type (the DOIP server only serves listed components; on a failed run `components/output/`, including `run.log`, is not listed). `provenance.prov:used` lists the pinned input sources, carrying the applied SQL as `schema:query`: a `lakefs://` input under `<QID>/components/` becomes a DOIP retrieve URL with `?version=<commit>`, any other `lakefs://` input (e.g. a benchmark's generated input file) keeps its lakeFS URI with `?version=<commit>`, and a DOIP URL input is kept as given.
 
@@ -113,6 +158,8 @@ Override names via `WORK_POOL_NAME` and `DEPLOYMENT_NAME` env vars.
 
 | Variable | Purpose |
 |---|---|
+| `GHCR_USERNAME` | GitHub username for private image metadata lookups; optional for public images |
+| `GHCR_TOKEN` | Optional GitHub token with package read access, used only for the GHCR pull-token exchange. Never saved in run parameters or metadata. Kubernetes needs its own image pull credentials for private images. |
 | `LAKEFS_HOST` | lakeFS server URL |
 | `LAKEFS_ACCESS_KEY` | lakeFS access key |
 | `LAKEFS_SECRET_KEY` | lakeFS secret key |
@@ -129,10 +176,11 @@ Inside the Kubernetes Job the containers use `LAKECTL_SERVER_ENDPOINT_URL` plus 
 ## Repository layout
 
 ```
-flow/run_model.py           mint QID → stage_input → submit_and_wait → write_metadata
+flow/run_model.py           resolve model → mint QID → stage_input → submit_and_wait → write_metadata
 tasks/stage_input.py        resolve source commits, stage config.json + config_prefect.json
 tasks/submit_and_wait.py    build/submit the K8s Job, poll, save run.log
 tasks/write_metadata.py     RO-Crate + FDO
+tools/model_images.py      GHCR tag/digest resolution, verified manifests and source labels
 tools/k8_tools.py           stuck-pod detection, per-container log collection
 tools/lakefs_helpers.py     lakeFS client, repo/branch constants
 tools/sharding.py           QID → sharded path

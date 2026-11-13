@@ -9,6 +9,7 @@ import lakefs
 from prefect import task
 
 from tools.lakefs_helpers import LAKEFS_RUN_REPO, LAKEFS_BRANCH, lakefs_client
+from tools.model_images import image_reference
 from tools.sharding import shard_qid
 
 DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
@@ -55,6 +56,33 @@ def mint_model_qid(docker_image: str) -> str:
     return f"Q{int(digest, 16) % 10**13:013d}"
 
 
+def _snapshot_properties(
+    model_tag: str, model_digest: str | None, model_source_revision: str | None,
+    prefix: str = "",
+) -> dict:
+    """Describe the image snapshot using Schema.org properties.
+
+    Args:
+        model_tag: Requested image tag.
+        model_digest: Resolved image digest, if available.
+        model_source_revision: Source Git commit from the image label, if available.
+        prefix: JSON-LD prefix for Schema.org terms.
+
+    Returns:
+        Additional properties preserving the requested tag and exact snapshot.
+    """
+    if not model_digest:
+        return {}
+    return {f"{prefix}additionalProperty": [
+        {"@type": f"{prefix}PropertyValue",
+         f"{prefix}name": name, f"{prefix}value": value}
+        for name, value in (
+            ("model_tag", model_tag), ("model_digest", model_digest),
+            ("model_source_revision", model_source_revision or "unavailable"),
+        )
+    ]}
+
+
 def _build_fdo(
     qid: str,
     model_image: str,
@@ -65,7 +93,27 @@ def _build_fdo(
     input_data_files: list[list[str]] | None = None,
     data_transformation_sql: list[str] | None = None,
     executed_by: str | None = None,
+    model_digest: str | None = None,
+    model_source_revision: str | None = None,
 ) -> bytes:
+    """Build the run's FAIR Digital Object descriptor.
+
+    Args:
+        qid: Run identifier.
+        model_image: Model image repository.
+        model_tag: Requested model tag.
+        run_start: Run start time.
+        end_time: Run end time.
+        file_entities: Files available in the run.
+        input_data_files: Versioned input sources and filenames.
+        data_transformation_sql: Optional per-file SQL.
+        executed_by: Optional executor pseudonym.
+        model_digest: Exact executed image digest.
+        model_source_revision: Source Git SHA from the image metadata.
+
+    Returns:
+        UTF-8 JSON descriptor bytes.
+    """
     model_name = model_image.split("/")[-1]
     components = []
     for entity in file_entities:
@@ -129,10 +177,11 @@ def _build_fdo(
             "prov:startedAtTime": run_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "prov:endedAtTime": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "prov:wasAssociatedWith": {
-                "@id": f"{model_image}:{model_tag}",
+                "@id": image_reference(model_image, model_digest) if model_digest else f"{model_image}:{model_tag}",
                 "@type": "prov:SoftwareAgent",
                 "schema:name": model_name,
-                "schema:softwareVersion": model_tag,
+                "schema:softwareVersion": model_digest or model_tag,
+                **_snapshot_properties(model_tag, model_digest, model_source_revision, "schema:"),
                 "schema:url": model_image,
             },
             "prov:used": prov_used,
@@ -151,7 +200,23 @@ def write_metadata(
     input_data_files: list[list[str]],
     data_transformation_sql: list[str] | None = None,
     executed_by: str | None = None,
+    model_digest: str | None = None,
+    model_source_revision: str | None = None,
 ):
+    """Write RO-Crate and FDO provenance, including the executed model snapshot.
+
+    Args:
+        qid: Run identifier.
+        model_image: Model image repository.
+        model_tag: Requested image tag.
+        run_start: Run start time.
+        status: Success or failure status.
+        input_data_files: Versioned input sources and filenames.
+        data_transformation_sql: Optional per-file SQL.
+        executed_by: Optional executor pseudonym.
+        model_digest: Exact executed image digest.
+        model_source_revision: Source Git SHA from the image metadata.
+    """
     computation_time = int((datetime.now(timezone.utc) - run_start).total_seconds())
     end_time = run_start + timedelta(seconds=computation_time)
     model_name  = model_image.split('/')[-1]
@@ -225,7 +290,9 @@ def write_metadata(
                 "@type": "SoftwareApplication",
                 "identifier":      model_qid,
                 "name":            model_name,
-                "softwareVersion": model_tag,
+                "softwareVersion": model_digest or model_tag,
+                **({"sameAs": image_reference(model_image, model_digest)} if model_digest else {}),
+                **_snapshot_properties(model_tag, model_digest, model_source_revision),
                 "url":             model_image,
             },
             *file_entities,
@@ -255,6 +322,8 @@ def write_metadata(
         input_data_files=input_data_files,
         data_transformation_sql=data_transformation_sql,
         executed_by=executed_by,
+        model_digest=model_digest,
+        model_source_revision=model_source_revision,
     )
     branch_handle \
         .object(f"{sharded}/{qid}.fdo.json") \

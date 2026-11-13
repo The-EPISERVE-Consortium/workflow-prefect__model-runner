@@ -30,6 +30,24 @@ PREFECT_PAYLOAD_JSON     = '{"model_image": "ghcr.io/example/model", "model_tag"
 MODEL_IMAGE       = "ghcr.io/the-episerve-consortium/model__prediction__grippeweb__baseline-nullmodel"
 MODEL_TAG         = "v0.1.0"
 FAKE_COMMIT_ID    = "fake-commit-id"
+MODEL_DIGEST = "sha256:" + "a" * 64
+SOURCE_REVISION = "b" * 40
+
+
+@pytest.fixture(autouse=True)
+def mock_model_resolution():
+    """Keep existing flow tests independent of registry network access.
+
+    Yields:
+        Mock: Registry resolver returning a fixed model snapshot.
+    """
+    with patch("flow.run_model.resolve_model_image") as resolver:
+        resolver.return_value = {
+            "model_image": MODEL_IMAGE, "model_tag": "latest",
+            "model_digest": MODEL_DIGEST, "model_source_revision": SOURCE_REVISION,
+        }
+        yield resolver
+
 
 
 @pytest.fixture(autouse=True)
@@ -288,7 +306,7 @@ def test_job_spec():
         patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     assert job.metadata.name == RUN_ID
@@ -299,7 +317,7 @@ def test_job_spec():
     assert pod.init_containers[0].name == "lakefs-pull"
     assert pod.init_containers[0].image == LAKECTL_PYTHON_IMAGE
     assert pod.init_containers[1].name == "model"
-    assert pod.init_containers[1].image == f"{MODEL_IMAGE}:{MODEL_TAG}"
+    assert pod.init_containers[1].image == f"{MODEL_IMAGE}@{MODEL_DIGEST}"
     assert pod.containers[0].name == "lakefs-push"
     assert any(v.name == "workdir" for v in pod.volumes)
 
@@ -315,7 +333,7 @@ def test_lakefs_push_disables_presigned_upload():
         patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     push_script = " ".join(job.spec.template.spec.containers[0].args)
@@ -334,7 +352,7 @@ def test_job_pull_spec_env():
         patch("time.sleep"),
     ):
         submit_and_wait.fn(
-            run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID,
+            run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID,
             input_data_files=versioned_files, data_transformation_sql=sql,
         )
 
@@ -353,7 +371,7 @@ def test_job_secret_refs():
         patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     env = job.spec.template.spec.init_containers[0].env
@@ -388,7 +406,7 @@ def test_run_log_uploaded_without_presigned_put():
         patch("time.sleep"),
     ):
         mock_repo.return_value.branch.return_value = branch_mock
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     log_upload = next(
         c for c in obj_mock.upload.call_args_list if c.kwargs.get("content_type") == "text/plain"
@@ -405,7 +423,7 @@ def test_submit_polls_until_succeeded():
         patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     assert batch_v1.read_namespaced_job.call_count == 2
 
@@ -435,7 +453,7 @@ def test_submit_raises_on_stuck_image():
     ):
         mock_repo.return_value.branch.return_value.object.return_value = obj_mock
         with pytest.raises(RuntimeError, match="InvalidImageName"):
-            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     # run.log is still saved, with the reason first
     log_upload = next(
@@ -458,7 +476,7 @@ def test_job_pull_container_gets_doip_repo_env(monkeypatch):
         patch("tasks.submit_and_wait.lakefs_client", return_value=MagicMock()),
         patch("time.sleep"),
     ):
-        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+        submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
     job = batch_v1.create_namespaced_job.call_args.kwargs["body"]
     pull_env = {e.name: e.value for e in job.spec.template.spec.init_containers[0].env if e.value}
@@ -478,7 +496,7 @@ def test_submit_raises_on_failure():
         patch("time.sleep"),
     ):
         with pytest.raises(RuntimeError, match=RUN_ID):
-            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, model_digest=MODEL_DIGEST, qid=QID)
 
 
 # ── model_pipeline ────────────────────────────────────────────────────────────
@@ -821,3 +839,128 @@ def test_a_lakefs_input_that_is_no_dataset_component_keeps_its_commit_in_the_pro
     used = fdo["provenance"]["prov:used"]
     assert used == [{"@id": f"{uri}?version={commit}", "@type": "prov:Entity"}]     # no SQL entry for an empty SQL
 
+
+
+def test_pipeline_saves_and_executes_the_resolved_snapshot(mock_model_resolution):
+    """The saved payload, Kubernetes task and provenance use one snapshot.
+
+    Args:
+        mock_model_resolution: Stub resolver returning a fixed image snapshot.
+    """
+    with (
+        patch("flow.run_model.stage_input", return_value=INPUT_DATA_FILES) as stage,
+        patch("flow.run_model.submit_and_wait") as submit,
+        patch("flow.run_model.write_metadata") as write,
+    ):
+        model_pipeline.fn(INPUT_DATA_FILES, MODEL_IMAGE, MODEL_CONFIG_JSON)
+    mock_model_resolution.assert_called_once_with(MODEL_IMAGE, "latest", None)
+    payload = _json.loads(stage.call_args.kwargs["prefect_payload_json"])
+    assert payload["model_digest"] == MODEL_DIGEST
+    assert payload["model_source_revision"] == SOURCE_REVISION
+    assert submit.call_args.kwargs["model_digest"] == MODEL_DIGEST
+    assert write.call_args.kwargs["model_digest"] == MODEL_DIGEST
+    assert write.call_args.kwargs["model_source_revision"] == SOURCE_REVISION
+
+
+def test_pipeline_replays_saved_parameters(mock_model_resolution):
+    """Saved effective parameters can be submitted unchanged for a pinned rerun.
+
+    Args:
+        mock_model_resolution: Stub resolver returning a fixed image snapshot.
+    """
+    with (
+        patch("flow.run_model.stage_input", return_value=INPUT_DATA_FILES) as stage,
+        patch("flow.run_model.submit_and_wait"),
+        patch("flow.run_model.write_metadata"),
+    ):
+        model_pipeline.fn(INPUT_DATA_FILES, MODEL_IMAGE, MODEL_CONFIG_JSON)
+        saved = _json.loads(stage.call_args.kwargs["prefect_payload_json"])
+        model_pipeline.fn(**saved)
+    assert mock_model_resolution.call_args.args == (MODEL_IMAGE, "latest", MODEL_DIGEST)
+
+
+def test_resolution_failure_starts_no_job(mock_model_resolution):
+    """Registry failures stop execution before staging inputs or submitting jobs.
+
+    Args:
+        mock_model_resolution: Stub resolver configured to fail.
+    """
+    mock_model_resolution.side_effect = RuntimeError("Registry unavailable")
+    with patch("flow.run_model.stage_input") as stage, patch("flow.run_model.submit_and_wait") as submit:
+        with pytest.raises(RuntimeError, match="Registry unavailable"):
+            model_pipeline.fn(INPUT_DATA_FILES, MODEL_IMAGE, MODEL_CONFIG_JSON)
+    stage.assert_not_called()
+    submit.assert_not_called()
+
+
+def test_submit_rejects_unpinned_model():
+    """The Kubernetes task cannot accidentally execute a mutable model tag."""
+    with patch("tasks.submit_and_wait.client.BatchV1Api") as batch:
+        with pytest.raises(ValueError, match="model_digest"):
+            submit_and_wait.fn(run_id=RUN_ID, model_image=MODEL_IMAGE, model_tag=MODEL_TAG, qid=QID)
+    batch.assert_not_called()
+
+
+def test_metadata_records_image_digest_and_source_revision():
+    """Both provenance formats identify the exact executed image and source."""
+    branch = MagicMock()
+    branch.objects.return_value = []
+    with patch("tasks.write_metadata.lakefs_client"), patch("tasks.write_metadata.lakefs.repository") as repo:
+        repo.return_value.branch.return_value = branch
+        write_metadata.fn(
+            QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, "success", [],
+            model_digest=MODEL_DIGEST, model_source_revision=SOURCE_REVISION,
+        )
+    documents = [_json.loads(call.kwargs["data"]) for call in branch.object.return_value.upload.call_args_list]
+    crate = next(document for document in documents if "@graph" in document)
+    software = next(node for node in crate["@graph"] if node["@type"] == "SoftwareApplication")
+    assert software["softwareVersion"] == MODEL_DIGEST
+    assert software["sameAs"] == f"{MODEL_IMAGE}@{MODEL_DIGEST}"
+    properties = {entry["name"]: entry["value"] for entry in software["additionalProperty"]}
+    assert properties == {"model_tag": MODEL_TAG, "model_digest": MODEL_DIGEST, "model_source_revision": SOURCE_REVISION}
+    fdo = next(document for document in documents if "provenance" in document)
+    agent = fdo["provenance"]["prov:wasAssociatedWith"]
+    assert agent["@id"] == f"{MODEL_IMAGE}@{MODEL_DIGEST}"
+    assert agent["schema:softwareVersion"] == MODEL_DIGEST
+    properties = {entry["schema:name"]: entry["schema:value"] for entry in agent["schema:additionalProperty"]}
+    assert properties["model_source_revision"] == SOURCE_REVISION
+
+
+def test_missing_source_revision_is_explicit():
+    """Old images still record their digest when no source label is available."""
+    fdo = _json.loads(_build_fdo(
+        QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, [], model_digest=MODEL_DIGEST,
+    ))
+    agent = fdo["provenance"]["prov:wasAssociatedWith"]
+    properties = {entry["schema:name"]: entry["schema:value"] for entry in agent["schema:additionalProperty"]}
+    assert properties["model_source_revision"] == "unavailable"
+
+
+def test_failed_job_still_records_resolved_snapshot():
+    """A failed execution preserves the exact model identity in provenance."""
+    with (
+        patch("flow.run_model.stage_input", return_value=INPUT_DATA_FILES),
+        patch("flow.run_model.submit_and_wait", side_effect=RuntimeError("Model failed")),
+        patch("flow.run_model.write_metadata") as write,
+    ):
+        with pytest.raises(RuntimeError, match="Model failed"):
+            model_pipeline.fn(INPUT_DATA_FILES, MODEL_IMAGE, MODEL_CONFIG_JSON)
+    assert write.call_args.kwargs["status"] == "failed"
+    assert write.call_args.kwargs["model_digest"] == MODEL_DIGEST
+    assert write.call_args.kwargs["model_source_revision"] == SOURCE_REVISION
+
+
+def test_source_revision_is_read_from_image_on_replay():
+    """A caller cannot override the source revision recorded for an image."""
+    with (
+        patch("flow.run_model.stage_input", return_value=INPUT_DATA_FILES) as stage,
+        patch("flow.run_model.submit_and_wait"),
+        patch("flow.run_model.write_metadata") as write,
+    ):
+        model_pipeline.fn(
+            INPUT_DATA_FILES, MODEL_IMAGE, MODEL_CONFIG_JSON,
+            model_digest=MODEL_DIGEST, model_source_revision="c" * 40,
+        )
+    assert write.call_args.kwargs["model_source_revision"] == SOURCE_REVISION
+    payload = _json.loads(stage.call_args.kwargs["prefect_payload_json"])
+    assert payload["model_source_revision"] == SOURCE_REVISION
