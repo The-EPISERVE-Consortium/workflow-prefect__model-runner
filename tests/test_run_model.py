@@ -975,3 +975,24 @@ def test_source_revision_is_read_from_image_on_replay():
     assert write.call_args.kwargs["model_source_revision"] == SOURCE_REVISION
     payload = _json.loads(stage.call_args.kwargs["prefect_payload_json"])
     assert payload["model_source_revision"] == SOURCE_REVISION
+
+
+# ── the FDO follows the `fdo` spec of episerve_specs ──────────────────────────
+
+def _conforms(document):
+    from episerve_specs import validate
+
+    result = validate(document, spec="fdo")
+    assert result.valid and not result.warnings, [str(i) for i in result.issues]
+
+
+def test_the_run_fdo_conforms_to_the_fdo_spec():
+    _conforms(_json.loads(_build_fdo(
+        QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES,
+        input_data_files=_INPUT_DATA_FILES, data_transformation_sql=_SQL,
+        executed_by="episerve_user_7", model_digest="sha256:" + "a" * 64, model_source_revision="b" * 40,
+    )))
+
+
+def test_the_run_fdo_without_inputs_or_executor_conforms_to_the_fdo_spec():
+    _conforms(_json.loads(_build_fdo(QID, MODEL_IMAGE, MODEL_TAG, _START_TIME, _END_TIME, _FILE_ENTITIES)))
