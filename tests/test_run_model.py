@@ -701,7 +701,11 @@ def test_write_metadata_uploads_fdo():
     branch_mock = MagicMock()
     obj_mock = MagicMock()
     branch_mock.object.return_value = obj_mock
-    branch_mock.objects.return_value = iter([])
+    sharded = shard_qid(QID)
+    output_path = "components/output/result.unrecognized"
+    output = MagicMock()
+    output.path = f"{sharded}/{output_path}"
+    branch_mock.objects.side_effect = [[], [output]]
 
     with (
         patch("tasks.write_metadata.lakefs_client"),
@@ -718,7 +722,6 @@ def test_write_metadata_uploads_fdo():
         )
 
     uploaded_paths = [call.args[0] for call in branch_mock.object.call_args_list]
-    sharded = shard_qid(QID)
     assert f"{sharded}/components/ro-crate-metadata.json" in uploaded_paths
     assert f"{sharded}/{QID}.fdo.json" in uploaded_paths
 
@@ -730,8 +733,10 @@ def test_write_metadata_uploads_fdo():
 
     fdo_call = next(c for c in obj_mock.upload.call_args_list if b"fdo:hasComponent" in c.kwargs.get("data", b""))
     fdo = _json.loads(fdo_call.kwargs["data"])
-    component_ids = {c["@id"] for c in fdo["kernel"]["fdo:hasComponent"]}
-    assert "components/ro-crate-metadata.json" in component_ids
+    _conforms(fdo)
+    components = {c["@id"]: c for c in fdo["kernel"]["fdo:hasComponent"]}
+    assert "components/ro-crate-metadata.json" in components
+    assert components[output_path]["mediaType"] == "application/octet-stream"
 
 
 def test_write_metadata_rocrate_uses_model_qid():
