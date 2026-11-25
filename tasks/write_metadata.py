@@ -19,6 +19,20 @@ DOIP_BASE_URL = os.getenv("DOIP_BASE_URL", "https://doip.episerve.zib.de")
 _EXECUTED_BY = re.compile(r"^episerve_user_\d{1,9}$")
 
 
+# Types that the standard library does not know on every system; checked after mimetypes.
+_FALLBACK_TYPES = {
+    ".log": "text/plain", ".txt": "text/plain", ".conf": "text/plain", ".tsv": "text/tab-separated-values",
+    ".md": "text/markdown", ".yaml": "application/yaml", ".yml": "application/yaml",
+    ".parquet": "application/vnd.apache.parquet",
+}
+
+
+def media_type(path: str) -> str:
+    """The media type of a run file; every component of the run's FDO has one, ``application/octet-stream`` if unknown."""
+    ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+    return mimetypes.guess_type(path)[0] or _FALLBACK_TYPES.get(ext) or "application/octet-stream"
+
+
 def executed_by_agent(executed_by: str | None) -> dict:
     """The provenance entry for the person who executed the run; empty for a missing or malformed value."""
     if executed_by and _EXECUTED_BY.fullmatch(executed_by):
@@ -231,15 +245,10 @@ def write_metadata(
     prefixes = [f"{sharded}/components/input/"]
     if status == "success":
         prefixes.append(f"{sharded}/components/output/")
-    _FALLBACK_TYPES = {".log": "text/plain", ".txt": "text/plain", ".tsv": "text/tab-separated-values"}
     for obj in (o for p in prefixes for o in branch_handle.objects(prefix=p)):
         rel_path = obj.path[len(f"{sharded}/"):]
         name = obj.path.split("/")[-1]
-        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
-        mime = mimetypes.guess_type(obj.path)[0] or _FALLBACK_TYPES.get(ext)
-        entity = {"@id": rel_path, "@type": "File", "name": name}
-        if mime:
-            entity["encodingFormat"] = mime
+        entity = {"@id": rel_path, "@type": "File", "name": name, "encodingFormat": media_type(obj.path)}
         file_entities.append(entity)
         if rel_path.startswith("components/input/"):
             input_refs.append({"@id": rel_path})
